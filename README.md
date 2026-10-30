@@ -26,7 +26,7 @@
 
 ## 开始使用
 
-可下载 [Windows 程序包](downloads/rushbin-windows.zip)，解压后双击 `DeskBox.exe`；也可以按 [构建说明](docs/BUILD.md) 从源码构建。程序包是未签名的实验版本，仅在开发环境进行过验证。
+可在 [1.0.0 发布页面](https://github.com/binbinyouli1727/rushbin-desktop/releases/tag/v1.0.0) 下载 `rushbin-1.0.0-windows-x64.zip`，解压后双击 `DeskBox.exe`；也可以按 [构建说明](docs/BUILD.md) 从源码构建。程序包尚未签名，不同 Windows 和设备环境仍需验证。
 
 请先阅读 [使用说明](docs/使用说明.md) 的“系统行为与数据位置”。程序可能隐藏 Windows 任务栏，按 F12 可切换恢复；退出时也会尝试恢复原来的状态。
 

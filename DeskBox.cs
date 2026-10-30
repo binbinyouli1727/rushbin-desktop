@@ -17,7 +17,7 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using Forms=System.Windows.Forms;
 using Drawing=System.Drawing;
-[assembly:System.Reflection.AssemblyVersion("2.26.1.0")]
+[assembly:System.Reflection.AssemblyVersion("1.0.0.0")]
 [assembly:System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
 namespace DesktopBox {
