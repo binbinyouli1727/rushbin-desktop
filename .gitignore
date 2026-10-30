@@ -1,0 +1,8 @@
+/DeskBox.exe
+/native/*.exe
+/native/*.dll
+/tools/
+/验证/
+/dist/
+*.tmp
+*.bak

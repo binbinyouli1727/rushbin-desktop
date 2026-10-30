@@ -1,0 +1,4 @@
+LIBRARY TrayBridge64.dll
+
+EXPORTS
+RushbinTrayHook

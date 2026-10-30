@@ -1,0 +1,20 @@
+name: Build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned TinyCC
+        shell: powershell
+        run: ./scripts/install-tinycc.ps1
+      - name: Build
+        shell: powershell
+        run: ./构建.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rushbin-windows
+          path: DeskBox.exe
