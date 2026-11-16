@@ -26,7 +26,7 @@
 
 ## 开始使用
 
-可在 [1.0.0 发布页面](https://github.com/binbinyouli1727/rushbin-desktop/releases/tag/v1.0.0) 下载 `rushbin-1.0.0-windows-x64.zip`，解压后双击 `DeskBox.exe`；也可以按 [构建说明](docs/BUILD.md) 从源码构建。程序包尚未签名，不同 Windows 和设备环境仍需验证。
+可在 [1.0.1 发布页面](https://github.com/binbinyouli1727/rushbin-desktop/releases/tag/v1.0.1) 下载 `rushbin-1.0.1-windows-x64.zip`，解压后双击 `DeskBox.exe`；也可以按 [构建说明](docs/BUILD.md) 从源码构建。程序包尚未签名，不同 Windows 和设备环境仍需验证。
 
 请先阅读 [使用说明](docs/使用说明.md) 的“系统行为与数据位置”。程序可能隐藏 Windows 任务栏，按 F12 可切换恢复；退出时也会尝试恢复原来的状态。
 
@@ -47,7 +47,7 @@
 
 程序可隐藏 Windows 任务栏；消息提示功能可能临时修改当前用户的任务栏闪烁与角标设置，并保存旧值以尝试恢复。项目尚未经过全面安全审计，也不保证在所有异常退出或 Explorer 重启场景中恢复成功。更多细节见[使用说明](docs/使用说明.md)。
 
-配置和截图副本位于 `%LOCALAPPDATA%\DeskBox`。添加桌面外的普通文件或文件夹时，程序会复制到系统实际桌面目录；应用程序通常创建快捷方式。删除“入口”和删除实际文件是不同操作。
+配置和截图副本位于 `DeskBox.exe` 同目录的 `用户数据` 文件夹。添加桌面外的普通文件或文件夹时，程序会将原件移动到系统实际桌面目录；应用程序通常创建快捷方式。主面板和文件窗口同步实际桌面文件。删除实际文件会影响两个窗口。升级前请阅读 [1.0.1 升级说明](docs/releases/1.0.1.md)。
 
 ## 构建与贡献
 

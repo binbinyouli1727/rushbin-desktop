@@ -17,7 +17,7 @@ powershell -ExecutionPolicy Bypass -File .\构建.ps1
 
 脚本从 TinyCC 官方下载站获取固定版本压缩包，校验 SHA-256 后解压到被 Git 忽略的 `tools/tinycc`。网络不可用时，可手动下载脚本中列出的相同文件，核对哈希，并将其中的 `tcc` 目录放在 `tools/tinycc/tcc`。
 
-构建输出是根目录 `DeskBox.exe`；两个原生辅助程序作为资源打包进入主程序。运行时用户数据不会写入源码仓库。构建不安装开机启动项。
+构建输出是根目录 `DeskBox.exe`；两个原生辅助程序作为资源打包进入主程序。默认运行时用户数据写入 EXE 旁的 `用户数据`，该目录被 Git 忽略，不能提交。构建不安装开机启动项。
 
 ## 隔离测试
 
@@ -31,3 +31,7 @@ Get-Content .\验证\测试结果.json -Raw
 ```
 
 测试会建立临时窗口、使用临时数据并进行真实 Windows API 调用；不要在 CI 或生产会话中假设它是纯单元测试。其他 rushbin 实例占用 F5 等快捷键可能使对应测试失败。测试结果不能代替实际鼠标拖放、通知接收和冷启动验证。
+
+## 发布检查
+
+完整本机检查入口：`scripts/test-release.ps1 -ExecutablePath <构建出的DeskBox.exe> -OutputDirectory <隔离检查输出目录>`。先退出其他 rushbin 实例，避免全局快捷键和桌面层级争用。脚本不负责关闭其他实例，遇到占用直接报错。检查会建立自己的临时文件和窗口。

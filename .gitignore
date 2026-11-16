@@ -6,3 +6,8 @@
 /dist/
 *.tmp
 *.bak
+
+/用户数据/
+/package/
+/rushbin-*-windows-x64.zip
+/SHA256SUMS.txt
