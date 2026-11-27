@@ -6,6 +6,8 @@
 #include <windows.h>
 #include <string.h>
 
+void HandleNativeTrayRequest(const CWPSTRUCT *message);
+
 typedef struct {
  DWORD magic,operation,window,id,flags,callback,icon,version,state,mask,pid;
  GUID guid;
@@ -15,6 +17,7 @@ typedef struct {
 __declspec(dllexport) LRESULT CALLBACK RushbinTrayHook(int code,WPARAM wp,LPARAM lp){
  if(code>=0 && lp){
   const CWPSTRUCT *msg=(const CWPSTRUCT*)lp;
+  HandleNativeTrayRequest(msg);
   if(msg->message==WM_COPYDATA && msg->lParam){
    const COPYDATASTRUCT *cd=(const COPYDATASTRUCT*)msg->lParam;
    if(cd->dwData==1 && cd->lpData && cd->cbData>=32 && cd->cbData<=4096){

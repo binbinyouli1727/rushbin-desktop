@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
@@ -17,12 +17,31 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using Forms=System.Windows.Forms;
 using Drawing=System.Drawing;
-[assembly:System.Reflection.AssemblyVersion("1.0.1.0")]
+#if STEAM_EDITION
+[assembly:System.Reflection.AssemblyVersion("2.27.14.1")]
+[assembly:System.Reflection.AssemblyFileVersion("2.27.14.1")]
+[assembly:System.Reflection.AssemblyTitle("Rushbin")]
+[assembly:System.Reflection.AssemblyProduct("Rushbin")]
+#else
+[assembly:System.Reflection.AssemblyVersion("1.0.2.0")]
+#endif
 [assembly:System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
 namespace DesktopBox {
+[StructLayout(LayoutKind.Sequential)]
+struct PropertyKey {public Guid Format;public int Id;}
+[StructLayout(LayoutKind.Explicit,Size=24)]
+struct PropertyValue {[FieldOffset(0)]public ushort Type;[FieldOffset(8)]public IntPtr Pointer;
+ [DllImport("ole32.dll")]public static extern int PropVariantClear(ref PropertyValue value);
+}
+[ComImport,Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPropertyStore {
+ void GetCount(out uint count);
+ void GetAt(uint index,out PropertyKey key);
+ void GetValue(ref PropertyKey key,out PropertyValue value);
+}
 public static class AppPaths {
- public static string DataRoot {get{return System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"用户数据"));}}
+ public static string DataRoot {get{return SteamEdition.Enabled?SteamEdition.DataRoot:System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"用户数据"));}}
 }
 public class Item { public string Id=Guid.NewGuid().ToString("N"),Path="",Name="",Group="inbox",SourcePath=""; }
 public class Group { public string Id=Guid.NewGuid().ToString("N"),Name="新分组"; }
@@ -48,7 +67,7 @@ public class Model {
  public bool ShowNames=false;
  public string Active="all";public double Opacity=.14,Width=740,Height=390,PanelGlass=100;public bool Collapsed=false,Topmost=false;public int Screen=0;
  public int LayoutVersion=0;public double PanelX=-99999,PanelY=-99999;
- public bool StatusVisible=true,StatusSeconds=false,StatusPing=false;
+ public bool StatusVisible=!SteamEdition.Enabled,StatusSeconds=false,StatusPing=false;
  public double StatusX=-99999,StatusY=-99999;
 }
 public static class DesktopStorage {
@@ -91,7 +110,8 @@ public class Store {
  public void DeleteGroup(string id){if(id=="inbox")throw new InvalidDataException("未分组不能删除");foreach(var i in Data.Items.Where(x=>x.Group==id))i.Group="inbox";Data.Groups.RemoveAll(x=>x.Id==id);if(Data.Active==id)Data.Active="inbox";Save();}
  public int Add(string[] paths,string group,out int rejected){
   var shared=Program.DesktopFiles!=null&&Program.DesktopFiles.HasStore(this)?Program.DesktopFiles:null;if(shared!=null)shared.BeginMutation();try{rejected=0;int count=0;if(!Data.Groups.Any(x=>x.Id==group))group="inbox";
-  foreach(string p in paths){try{string source=EntryPath.Normalize(p);if(!EntryPath.Exists(source)){rejected++;continue;}var old=Data.Items.FirstOrDefault(x=>String.Equals(x.Path,source,StringComparison.OrdinalIgnoreCase)||String.Equals(x.SourcePath,source,StringComparison.OrdinalIgnoreCase)&&!(DesktopStorage.Production(this)&&DesktopFiles.Ordinary(source)));string path=old==null&&DesktopStorage.Production(this)?DesktopStorage.Import(source,DesktopStorage.Desktop,null,DesktopFiles.Ordinary(source)):source;if(old!=null){if(Data.Active!="all")old.Group=group;continue;}string name=EntryPath.Title(path);Data.Items.Add(new Item{Path=path,SourcePath=String.Equals(path,source,StringComparison.OrdinalIgnoreCase)?"":source,Name=String.IsNullOrEmpty(name)?path:name,Group=group});count++;}catch{rejected++;}}
+   bool moveToDesktop=!SteamEdition.Enabled&&DesktopStorage.Production(this);
+   foreach(string p in paths){try{string source=EntryPath.Normalize(p);if(!EntryPath.Exists(source)){rejected++;continue;}var old=Data.Items.FirstOrDefault(x=>String.Equals(x.Path,source,StringComparison.OrdinalIgnoreCase)||String.Equals(x.SourcePath,source,StringComparison.OrdinalIgnoreCase)&&!(moveToDesktop&&DesktopFiles.Ordinary(source)));string path=old==null&&moveToDesktop?DesktopStorage.Import(source,DesktopStorage.Desktop,null,DesktopFiles.Ordinary(source)):source;if(old!=null){if(Data.Active!="all")old.Group=group;continue;}string name=EntryPath.Title(path);Data.Items.Add(new Item{Path=path,SourcePath=String.Equals(path,source,StringComparison.OrdinalIgnoreCase)?"":source,Name=String.IsNullOrEmpty(name)?path:name,Group=group});count++;}catch{rejected++;}}
   Save();return count;}finally{if(shared!=null)shared.EndMutation();}
  }
  public IEnumerable<Item> Filter(string query){return Data.Items.Where(x=>(Data.Active=="all"||x.Group==Data.Active)&&(String.IsNullOrEmpty(query)||(x.Name+" "+x.Path).IndexOf(query,StringComparison.OrdinalIgnoreCase)>=0));}
@@ -101,7 +121,7 @@ public class Store {
  public void Pin(string id,bool pin){if(pin&&Data.Items.Any(x=>x.Id==id)&&!Data.DockPins.Contains(id))Data.DockPins.Add(id);if(!pin)Data.DockPins.Remove(id);Save();}
  public void OrderPin(string source,string target){if(source==target||!Data.DockPins.Contains(source)||!Data.DockPins.Contains(target))return;Data.DockPins.Remove(source);Data.DockPins.Insert(Data.DockPins.IndexOf(target),source);Save();}
  public static bool MoveDockOrder(List<string> order,string source,string target,bool after){if(source==target||!order.Contains(source))return false;var before=order.ToArray();order.Remove(source);int index=order.IndexOf(target);order.Insert(index<0?(after?order.Count:0):index+(after?1:0),source);return !before.SequenceEqual(order);}
- public int ImportPinnedLinks(IEnumerable<string> paths){var oldPins=Data.DockPins.ToList();var imported=new List<string>();var identities=Data.Items.ToDictionary(x=>x.Id,x=>Native.LinkIdentity(x.Path));foreach(string path in paths){if(!File.Exists(path))continue;var identity=Native.LinkIdentity(path);var item=Data.Items.FirstOrDefault(x=>String.Equals(identities[x.Id],identity,StringComparison.OrdinalIgnoreCase));if(item==null){string target=DesktopStorage.Production(this)?DesktopStorage.Import(path,DesktopStorage.Desktop,TaskbarLinks.Title(path)):path;item=new Item{Path=target,SourcePath=String.Equals(path,target,StringComparison.OrdinalIgnoreCase)?"":path,Name=TaskbarLinks.Title(path),Group="inbox"};Data.Items.Add(item);identities[item.Id]=identity;}if(!imported.Contains(item.Id))imported.Add(item.Id);}Data.DockPins=imported.Concat(oldPins).Distinct().ToList();Save();return imported.Count;}
+ public int ImportPinnedLinks(IEnumerable<string> paths){var oldPins=Data.DockPins.ToList();var imported=new List<string>();var identities=Data.Items.ToDictionary(x=>x.Id,x=>Native.LinkIdentity(x.Path));foreach(string path in paths){if(!File.Exists(path))continue;var identity=Native.LinkIdentity(path);var item=Data.Items.FirstOrDefault(x=>String.Equals(identities[x.Id],identity,StringComparison.OrdinalIgnoreCase));if(item==null){string target=!SteamEdition.Enabled&&DesktopStorage.Production(this)?DesktopStorage.Import(path,DesktopStorage.Desktop,TaskbarLinks.Title(path)):path;item=new Item{Path=target,SourcePath=String.Equals(path,target,StringComparison.OrdinalIgnoreCase)?"":path,Name=TaskbarLinks.Title(path),Group="inbox"};Data.Items.Add(item);identities[item.Id]=identity;}if(!imported.Contains(item.Id))imported.Add(item.Id);}Data.DockPins=imported.Concat(oldPins).Distinct().ToList();Save();return imported.Count;}
 }
 
 public static class TaskbarLinks {
@@ -142,6 +162,10 @@ public static class Native {
   if(changed)SetWindowPos(h,IntPtr.Zero,0,0,0,0,0x37);
  }
  public static bool ToolWindow(Window window){IntPtr h=new WindowInteropHelper(window).Handle;long style=ReadLong(h,-20).ToInt64();return (style&0x80)!=0&&(style&0x40000)==0&&!window.ShowInTaskbar;}
+ public static void PassThroughMouse(Window window){
+  var handle=new WindowInteropHelper(window).Handle;
+  WriteLong(handle,-20,new IntPtr(ReadLong(handle,-20).ToInt64()|0x20));
+ }
  public static void PreviewStyle(Window window){var h=new WindowInteropHelper(window).Handle;long style=(ReadLong(h,-20).ToInt64()|0x08000080L)&~0x40000L;if(Program.RunningProbe)style=(style|0x40000L)&~0x80L;WriteLong(h,-20,new IntPtr(style));PanelCorners(window);}
  public static IntPtr DesktopSurface(){IntPtr result=IntPtr.Zero;EnumWindows((h,state)=>{var name=new StringBuilder(128);GetClassName(h,name,name.Capacity);if((name.ToString()=="Progman"||name.ToString()=="WorkerW")&&FindWindowEx(h,IntPtr.Zero,"SHELLDLL_DefView",null)!=IntPtr.Zero){result=h;return false;}return true;},IntPtr.Zero);return result==IntPtr.Zero?GetShellWindow():result;}
  public static void AnchorDock(Window window){if(Program.PanelCheck||WidgetLayers.Raised(window)||(window is DockBar&&(((DockBar)window).HoldShown||((DockBar)window).AttentionShown)))return;IntPtr h=new WindowInteropHelper(window).Handle,desktop=DesktopSurface();if(h==IntPtr.Zero||desktop==IntPtr.Zero)return;IntPtr previous=GetWindow(desktop,3);if(previous==h)return;if(previous!=IntPtr.Zero&&(ReadLong(previous,-20).ToInt64()&8)!=0)previous=IntPtr.Zero;SetWindowPos(h,previous,0,0,0,0,0x213);}
@@ -165,18 +189,43 @@ public static class Native {
  [DllImport("user32.dll")]static extern bool GetClientRect(IntPtr h,out RegionBounds rect);
  [DllImport("user32.dll")]static extern bool ClientToScreen(IntPtr h,ref NativePoint point);
  public static int[] FrameInsets(Window window){var h=new WindowInteropHelper(window).Handle;RegionBounds outer,client;var origin=new NativePoint();if(!GetWindowRect(h,out outer)||!GetClientRect(h,out client)||!ClientToScreen(h,ref origin))return new[]{-1,-1,-1,-1};return new[]{origin.X-outer.Left,origin.Y-outer.Top,outer.Right-origin.X-client.Right,outer.Bottom-origin.Y-client.Bottom};}
+ internal static Drawing.Rectangle WindowPixelBounds(IntPtr handle){
+  RegionBounds bounds;
+  return GetWindowRect(handle,out bounds)?Drawing.Rectangle.FromLTRB(bounds.Left,bounds.Top,bounds.Right,bounds.Bottom):Drawing.Rectangle.Empty;
+ }
+ internal static bool SuppressWindowChrome(IntPtr handle){
+  const int nonClientPolicy=2,cornerPreference=33,borderColor=34;
+  int disabled=1,doNotRound=1,noColor=unchecked((int)0xfffffffe);
+  DwmSetWindowAttribute(handle,nonClientPolicy,ref disabled,4);
+  DwmSetWindowAttribute(handle,cornerPreference,ref doNotRound,4);
+  bool borderSuppressed=DwmSetWindowAttribute(handle,borderColor,ref noColor,4)==0;
+  NoSystemTransitions(handle);
+  return borderSuppressed;
+ }
  [DllImport("gdi32.dll")]static extern int GetRgnBox(IntPtr region,out RegionBounds bounds);
  [DllImport("user32.dll")]static extern int SetWindowRgn(IntPtr h,IntPtr region,bool redraw);
  [DllImport("user32.dll")]static extern int GetWindowRgn(IntPtr h,IntPtr region);
  public static double WidgetCornerRadius(Window window){return window is StatusWidget?12:window is DockBar?25:window is Box?22:window is ControlCenter?20:18;}
- public static bool ClipContains(Window window,double x,double y){var source=PresentationSource.FromVisual(window);if(source==null)return false;IntPtr region=CreateRectRgn(0,0,0,0);try{if(GetWindowRgn(new WindowInteropHelper(window).Handle,region)<=1)return false;var scale=source.CompositionTarget.TransformToDevice;return PtInRegion(region,(int)Math.Round(x*scale.M11),(int)Math.Round(y*scale.M22));}finally{DeleteObject(region);}}
+ public static bool ClipContains(Window window,double x,double y){
+  var source=PresentationSource.FromVisual(window);if(source==null)return false;
+  var scale=source.CompositionTarget.TransformToDevice;
+  return ClipContains(new WindowInteropHelper(window).Handle,
+   (int)Math.Round(x*scale.M11),(int)Math.Round(y*scale.M22));
+ }
+ internal static bool ClipContains(IntPtr handle,int x,int y){
+  IntPtr region=CreateRectRgn(0,0,0,0);
+  try{return GetWindowRgn(handle,region)>1&&PtInRegion(region,x,y);}finally{DeleteObject(region);}
+ }
  public static bool ClipGlass(Window window,double radius){
   if(window is StatusWidget)radius=12;
   if(window is Box&&!window.AllowsTransparency)return PanelCorners(window);
   var source=PresentationSource.FromVisual(window) as HwndSource;if(source==null||source.CompositionTarget==null||window.ActualWidth<20||window.ActualHeight<20)return false;
   var m=source.CompositionTarget.TransformToDevice;double inset=window is StatusWidget||window is Box?0:6;int l=(int)Math.Ceiling(inset*m.M11),t=(int)Math.Ceiling(inset*m.M22),r=(int)Math.Floor((window.ActualWidth-inset)*m.M11),b=(int)Math.Floor((window.ActualHeight-inset)*m.M22);
-  IntPtr region=CreateRoundRectRgn(l,t,r+1,b+1,(int)Math.Round(radius*2*m.M11),(int)Math.Round(radius*2*m.M22));if(region==IntPtr.Zero)return false;
-  if(SetWindowRgn(source.Handle,region,true)!=0)return true;DeleteObject(region);return false;
+  return ClipRoundedWindow(source.Handle,l,t,r+1,b+1,(int)Math.Round(radius*2*m.M11),(int)Math.Round(radius*2*m.M22));
+ }
+ internal static bool ClipRoundedWindow(IntPtr handle,int left,int top,int right,int bottom,int ellipseWidth,int ellipseHeight){
+  IntPtr region=CreateRoundRectRgn(left,top,right,bottom,ellipseWidth,ellipseHeight);if(region==IntPtr.Zero)return false;
+  if(SetWindowRgn(handle,region,true)!=0)return true;DeleteObject(region);return false;
  }
  public static bool CheckGlassClip(Window window){
   if(window is Box&&!window.AllowsTransparency){int corner,material;var handle=new WindowInteropHelper(window).Handle;return DwmGetWindowAttribute(handle,33,out corner,4)==0&&corner==2&&DwmGetWindowAttribute(handle,38,out material,4)==0&&material==3;}
@@ -221,7 +270,7 @@ public static class Native {
  [DllImport("user32.dll")]public static extern uint RegisterWindowMessage(string msg);
  [DllImport("user32.dll")]public static extern bool PostMessage(IntPtr h,uint msg,IntPtr w,IntPtr l);
  [DllImport("user32.dll")]public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
- public static uint ShowMessage=RegisterWindowMessage("DeskBox.Show.v1");
+ public static uint ShowMessage=RegisterWindowMessage(SteamEdition.Enabled?"Rushbin.Steam.Show.v1":"DeskBox.Show.v1");
  static Dictionary<string,ImageSource> icons=new Dictionary<string,ImageSource>(StringComparer.OrdinalIgnoreCase);
  [ComImport,Guid("000214F9-0000-0000-C000-000000000046"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]interface IShellLinkW {
   void GetPath([Out,MarshalAs(UnmanagedType.LPWStr)]StringBuilder path,int length,IntPtr findData,uint flags);void GetIDList(out IntPtr id);void SetIDList(IntPtr id);
@@ -245,6 +294,25 @@ public static class Native {
  public static string LinkIdentity(string path){return CachedLink(path,"identity",()=>LinkDetail(path,false));}
  public static string LinkTitle(string path){return LinkDetail(path,true);}
  public static string ShortcutTarget(string path){return CachedLink(path,"target",()=>ReadShortcutTarget(path));}
+ static readonly Guid AppUserModelPropertySet=new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+ public static string ShortcutAppId(string path){
+  if(!String.Equals(System.IO.Path.GetExtension(path),".lnk",StringComparison.OrdinalIgnoreCase))return "";
+  return CachedLink(path,"app-id",()=>{
+   object shortcut=null;
+   var value=new PropertyValue();
+   try{
+    shortcut=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+    ((System.Runtime.InteropServices.ComTypes.IPersistFile)shortcut).Load(path,0);
+    var key=new PropertyKey{Format=AppUserModelPropertySet,Id=5};
+    ((IPropertyStore)shortcut).GetValue(ref key,out value);
+    return value.Type==(ushort)VarEnum.VT_LPWSTR?Marshal.PtrToStringUni(value.Pointer)??"":"";
+   }catch(COMException){return "";}
+   finally{
+    PropertyValue.PropVariantClear(ref value);
+    if(shortcut!=null)Marshal.FinalReleaseComObject(shortcut);
+   }
+  });
+ }
  static string ReadShortcutTarget(string path){object obj=null;try{obj=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));((System.Runtime.InteropServices.ComTypes.IPersistFile)obj).Load(path,0);var target=new StringBuilder(32768);((IShellLinkW)obj).GetPath(target,target.Capacity,IntPtr.Zero,4);return Environment.ExpandEnvironmentVariables(target.ToString());}finally{if(obj!=null)Marshal.FinalReleaseComObject(obj);}}
  public static ImageSource Icon(string path){return Icon(path,0);}
  public static ImageSource FileTypeIcon(string extension){Info info;if(SHGetFileInfo("newfile"+extension,0x80,out info,(uint)Marshal.SizeOf(typeof(Info)),0x110)==IntPtr.Zero||info.hIcon==IntPtr.Zero)return null;try{return FromHandle(info.hIcon);}finally{DestroyIcon(info.hIcon);}}
@@ -329,9 +397,28 @@ public static class FrostSkin {
 }
 // Reuse Codex's existing native window instead of activating its Store shortcut
 // again. The shortcut name is not identity: the imported icon is named ChatGPT.
+// Optional local companion. Normal launch behavior is preserved when not configured.
+public static class CodexFrostBridge {
+ public sealed class Options {public bool Enabled;public string Executable="";}
+ public static bool TryEnsure(string entry){
+  if(!CodexActivation.IsEntry(entry))return false;
+  string config=System.IO.Path.Combine(Program.S.Root,"codex-frost-launcher.json");
+  if(!File.Exists(config))return false;
+  try{
+   var options=new JavaScriptSerializer().Deserialize<Options>(File.ReadAllText(config,Encoding.UTF8));
+   if(options==null||!options.Enabled)return false;
+   if(!String.Equals(System.IO.Path.GetFileName(options.Executable),"CodexFrost.exe",StringComparison.OrdinalIgnoreCase)||!File.Exists(options.Executable))throw new FileNotFoundException("Codex Frost companion is unavailable",options.Executable);
+   using(var p=Process.Start(new ProcessStartInfo(options.Executable,"--ensure-full --minimized"){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=System.IO.Path.GetDirectoryName(options.Executable)})){
+    Record(entry,true,null,p.Id);
+   }
+   return true;
+  }catch(Exception error){Record(entry,false,error.Message,0);return false;}
+ }
+ static void Record(string entry,bool accepted,string error,int pid){try{DeferredDiagnostics.Write(System.IO.Path.Combine(Program.S.Root,"codex-frost-dispatch.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),entry=entry,accepted=accepted,error=error,companionRequestPid=pid,arguments="--ensure-full --minimized"}));}catch{}}
+}
 public static class CodexActivation {
  public const string AppId="OpenAI.Codex_2p2nqsd0c76g0!App";
- public class Candidate {public long Handle;public int ProcessId;public bool Minimized;}
+ public class Candidate {public long Handle;public int ProcessId;public bool Minimized,Visible;}
  delegate bool EnumCallback(IntPtr window,IntPtr data);
  [DllImport("user32.dll")]static extern bool EnumWindows(EnumCallback callback,IntPtr data);
  [DllImport("user32.dll")]static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
@@ -353,10 +440,38 @@ public static class CodexActivation {
  public static bool IsEntry(string path){try{return MatchesIdentity(Native.LinkIdentity(path));}catch{return false;}}
  public static bool OfficialProcess(int id){try{using(var p=Process.GetProcessById(id))return p.SessionId==Process.GetCurrentProcess().SessionId&&OfficialExecutable(p.MainModule.FileName);}catch{return false;}}
  public static void ObserveForeground(IntPtr foreground){if(foreground==previousForeground)return;previousForeground=foreground;if(foreground==IntPtr.Zero)return;uint id;GetWindowThreadProcessId(foreground,out id);if(OfficialProcess((int)id))lastCodexWindow=foreground;}
- public static List<Candidate> Windows(){var processes=new HashSet<int>();foreach(var p in Process.GetProcessesByName("ChatGPT")){using(p){if(OfficialProcess(p.Id))processes.Add(p.Id);}}var result=new List<Candidate>();EnumWindows((h,unused)=>{uint id;GetWindowThreadProcessId(h,out id);if(!processes.Contains((int)id)||!IsWindowVisible(h)||GetWindow(h,4)!=IntPtr.Zero)return true;var cls=new StringBuilder(128);GetClassName(h,cls,cls.Capacity);if(cls.ToString()!="Chrome_WidgetWin_1")return true;var title=new StringBuilder(512);GetWindowText(h,title,title.Capacity);if(title.Length==0||title.ToString().StartsWith("DevTools",StringComparison.OrdinalIgnoreCase))return true;result.Add(new Candidate{Handle=h.ToInt64(),ProcessId=(int)id,Minimized=IsIconic(h)});return true;},IntPtr.Zero);return result;}
- public static bool Focus(IntPtr window){if(!IsWindow(window))return false;if(IsIconic(window))ShowWindowAsync(window,9);if(SetForegroundWindow(window)||Native.GetForegroundWindow()==window)return true;uint ignored,current=GetCurrentThreadId(),foreground=GetWindowThreadProcessId(Native.GetForegroundWindow(),out ignored),target=GetWindowThreadProcessId(window,out ignored);bool joinedForeground=false,joinedTarget=false;try{if(foreground!=0&&foreground!=current)joinedForeground=AttachThreadInput(current,foreground,true);if(target!=0&&target!=current&&target!=foreground)joinedTarget=AttachThreadInput(current,target,true);BringWindowToTop(window);return SetForegroundWindow(window)||Native.GetForegroundWindow()==window;}finally{if(joinedTarget)AttachThreadInput(current,target,false);if(joinedForeground)AttachThreadInput(current,foreground,false);}}
+ public static List<Candidate> Windows(bool includeHidden=false){var processes=new HashSet<int>();foreach(var p in Process.GetProcessesByName("ChatGPT")){using(p){if(OfficialProcess(p.Id))processes.Add(p.Id);}}var result=new List<Candidate>();EnumWindows((h,unused)=>{uint id;GetWindowThreadProcessId(h,out id);if(!processes.Contains((int)id)||(!includeHidden&&!IsWindowVisible(h))||GetWindow(h,4)!=IntPtr.Zero)return true;var cls=new StringBuilder(128);GetClassName(h,cls,cls.Capacity);if(cls.ToString()!="Chrome_WidgetWin_1")return true;var title=new StringBuilder(512);GetWindowText(h,title,title.Capacity);if(title.Length==0||title.ToString().StartsWith("DevTools",StringComparison.OrdinalIgnoreCase))return true;result.Add(new Candidate{Handle=h.ToInt64(),ProcessId=(int)id,Minimized=IsIconic(h),Visible=IsWindowVisible(h)});return true;},IntPtr.Zero);return result;}
+ public static bool Focus(IntPtr window){if(!IsWindow(window))return false;if(!IsWindowVisible(window)||IsIconic(window))ShowWindowAsync(window,9);if(SetForegroundWindow(window)||Native.GetForegroundWindow()==window)return true;uint ignored,current=GetCurrentThreadId(),foreground=GetWindowThreadProcessId(Native.GetForegroundWindow(),out ignored),target=GetWindowThreadProcessId(window,out ignored);bool joinedForeground=false,joinedTarget=false;try{if(foreground!=0&&foreground!=current)joinedForeground=AttachThreadInput(current,foreground,true);if(target!=0&&target!=current&&target!=foreground)joinedTarget=AttachThreadInput(current,target,true);BringWindowToTop(window);return SetForegroundWindow(window)||Native.GetForegroundWindow()==window;}finally{if(joinedTarget)AttachThreadInput(current,target,false);if(joinedForeground)AttachThreadInput(current,foreground,false);}}
  public static void Record(string action,Candidate target,bool activated,long sourceForeground=0){try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"codex-window-activation.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),action=action,target=target,activated=activated,sourceForeground=sourceForeground,foreground=Native.GetForegroundWindow().ToInt64(),source="入口的Shell AppID、已知本机磨砂启动器路径和官方进程窗口；不依赖图标名称"}),Encoding.UTF8);}catch{}}
- public static bool TryReuse(string path,out bool activated){activated=false;if(!IsEntry(path))return false;ObserveForeground(Native.GetForegroundWindow());var windows=Windows();if(windows.Count==0){Record("no-existing-window-use-original-shortcut",null,false);return false;}var foreground=Native.GetForegroundWindow().ToInt64();var target=windows.FirstOrDefault(x=>x.Handle==foreground)??windows.FirstOrDefault(x=>x.Handle==lastCodexWindow.ToInt64())??windows[0];activated=Focus(new IntPtr(target.Handle));lastCodexWindow=new IntPtr(target.Handle);Record("focus-existing-no-launch",target,activated,foreground);return true;}
+ static DispatcherTimer restoreRetry;static int restoreAttempts;static Candidate restoreTarget;
+ public static Candidate SelectExisting(List<Candidate> windows,long foreground,long previous){return windows.FirstOrDefault(x=>x.Handle==foreground&&x.Visible)??windows.FirstOrDefault(x=>x.Handle==previous)??windows.FirstOrDefault(x=>x.Visible)??windows.FirstOrDefault();}
+ public static bool Running(){foreach(var process in Process.GetProcessesByName("ChatGPT"))using(process)if(OfficialProcess(process.Id))return true;return false;}
+ public static bool TryReuse(string path,out bool activated){
+  activated=false;if(!IsEntry(path))return false;ObserveForeground(Native.GetForegroundWindow());
+  var windows=Windows(true);long foreground=Native.GetForegroundWindow().ToInt64();
+  var target=SelectExisting(windows,foreground,lastCodexWindow.ToInt64());
+  if(target==null&&!Running()){Record("no-existing-process-use-original-launch",null,false);return false;}
+  bool trayRequested=false;
+  if(!windows.Any(x=>x.Visible)&&Program.Control!=null)trayRequested=Program.Control.TryRestoreCodexFromTray();
+  if(target!=null&&(!trayRequested||target.Visible))activated=Focus(new IntPtr(target.Handle))&&IsWindowVisible(new IntPtr(target.Handle))&&Native.GetForegroundWindow().ToInt64()==target.Handle;
+  if(target!=null)lastCodexWindow=new IntPtr(target.Handle);
+  Record(activated?"focus-existing-no-launch":trayRequested?"restore-existing-tray-request":"restore-existing-window-request",target,activated,foreground);
+  if(!activated)RetryRestore(target);return true;
+ }
+ static void RetryRestore(Candidate target){
+  if(Application.Current==null)return;
+  if(restoreRetry!=null)restoreRetry.Stop();restoreAttempts=0;restoreTarget=target;
+  restoreRetry=new DispatcherTimer(DispatcherPriority.Input){Interval=TimeSpan.FromMilliseconds(80)};
+  restoreRetry.Tick+=(o,e)=>{
+   restoreAttempts++;var windows=Windows(true);var visible=windows.Where(x=>x.Visible).ToList();
+   var chosen=SelectExisting(visible,Native.GetForegroundWindow().ToInt64(),lastCodexWindow.ToInt64());
+   // Give the application's own tray handler time to restore its window first.
+   if(chosen==null&&restoreAttempts>=5)chosen=windows.FirstOrDefault(x=>restoreTarget!=null&&x.Handle==restoreTarget.Handle)??SelectExisting(windows,0,lastCodexWindow.ToInt64());
+   bool focused=chosen!=null&&Focus(new IntPtr(chosen.Handle))&&IsWindowVisible(new IntPtr(chosen.Handle))&&Native.GetForegroundWindow().ToInt64()==chosen.Handle;
+   if(focused||restoreAttempts>=15){restoreRetry.Stop();Record(focused?"restored-existing-no-launch":"existing-instance-restore-not-confirmed",chosen,focused);if(focused)lastCodexWindow=new IntPtr(chosen.Handle);}
+  };restoreRetry.Start();
+ }
+
 }
 public sealed class NewFileType {
  public string Extension="",Label="",Kind="",Template="",Source="";public byte[] Data;
@@ -429,8 +544,9 @@ public sealed class PanelBackdrop:IDisposable {
  [DllImport("user32.dll")]static extern bool EndDeferWindowPos(IntPtr batch);
  string regionKey;public int RegionChanges,PositionChanges,LayerBatches;static object queue;Window box;Func<double> amountSource;double cornerRadius;Func<System.Windows.Rect?> clipSource;IntPtr handle;Windows.UI.Composition.Compositor compositor;Windows.UI.Composition.SpriteVisual visual;Windows.UI.Composition.CompositionBackdropBrush brush;Target target;public string Error="";public bool Ready{get{return visual!=null&&handle!=IntPtr.Zero;}}public long Handle{get{return handle.ToInt64();}}public float Strength{get{return visual==null?0:visual.Opacity;}}
  public PanelBackdrop(Box owner):this(owner,()=>Program.S.Data.PanelGlass/100,22){}
+ internal bool WindowBorderSuppressed{get;private set;}
  public PanelBackdrop(Window owner,Func<double> amount,double radius,Func<System.Windows.Rect?> clip=null){box=owner;amountSource=amount;cornerRadius=radius;clipSource=clip;}
- void Initialize(){if(queue==null){int hr=CreateDispatcherQueueController(new QueueOptions{Size=12,Thread=2,Apartment=2},out queue);Marshal.ThrowExceptionForHR(hr);}handle=CreateWindowEx(0x082000A0,"Static","rushbin glass material",0x80000000,0,0,1,1,GetWindow(new WindowInteropHelper(box).Handle,4),IntPtr.Zero,IntPtr.Zero,IntPtr.Zero);if(handle==IntPtr.Zero)throw new System.ComponentModel.Win32Exception();if(box is ControlCenter||box is FileShelf)Native.NoSystemTransitions(handle);int enabled=1;Marshal.ThrowExceptionForHR(DwmSetWindowAttribute(handle,17,ref enabled,4));compositor=new Windows.UI.Composition.Compositor();IntPtr raw;((DesktopInterop)(object)compositor).CreateDesktopWindowTarget(handle,true,out raw);try{target=(Target)Marshal.GetObjectForIUnknown(raw);}finally{Marshal.Release(raw);}visual=compositor.CreateSpriteVisual();brush=compositor.CreateHostBackdropBrush();visual.Brush=brush;target.Root=visual;}
+ void Initialize(){if(queue==null){int hr=CreateDispatcherQueueController(new QueueOptions{Size=12,Thread=2,Apartment=2},out queue);Marshal.ThrowExceptionForHR(hr);}handle=CreateWindowEx(0x082000A0,"Static","rushbin glass material",0x80000000,0,0,1,1,GetWindow(new WindowInteropHelper(box).Handle,4),IntPtr.Zero,IntPtr.Zero,IntPtr.Zero);if(handle==IntPtr.Zero)throw new System.ComponentModel.Win32Exception();if(box is ScreenshotPinNotice)WindowBorderSuppressed=Native.SuppressWindowChrome(handle);else if(box is ControlCenter||box is FileShelf)Native.NoSystemTransitions(handle);int enabled=1;Marshal.ThrowExceptionForHR(DwmSetWindowAttribute(handle,17,ref enabled,4));compositor=new Windows.UI.Composition.Compositor();IntPtr raw;((DesktopInterop)(object)compositor).CreateDesktopWindowTarget(handle,true,out raw);try{target=(Target)Marshal.GetObjectForIUnknown(raw);}finally{Marshal.Release(raw);}visual=compositor.CreateSpriteVisual();brush=compositor.CreateHostBackdropBrush();visual.Brush=brush;target.Root=visual;}
  public bool Update(){if(new WindowInteropHelper(box).Handle==IntPtr.Zero)return false;double amount=Math.Max(0,Math.Min(1,amountSource()));if(amount<=0||!box.IsVisible||box.WindowState==WindowState.Minimized){if(handle!=IntPtr.Zero&&IsWindowVisible(handle))ShowWindow(handle,0);if(visual!=null&&visual.Opacity!=(float)amount)visual.Opacity=(float)amount;return true;}try{if(!Ready)Initialize();IntPtr panel=new WindowInteropHelper(box).Handle;Rect r;if(!GetWindowRect(panel,out r))return false;int w=r.Right-r.Left,h=r.Bottom-r.Top;var size=new System.Numerics.Vector2(w,h);if(visual.Size!=size)visual.Size=size;if(visual.Opacity!=(float)amount)visual.Opacity=(float)amount;double scale=box.ActualWidth>0?w/box.ActualWidth:1;int inset=box is Box?0:(int)Math.Round(6*scale);System.Windows.Rect? clip=clipSource==null?null:clipSource();if(clipSource!=null&&!clip.HasValue){if(IsWindowVisible(handle))ShowWindow(handle,0);return true;}int left=clip.HasValue?(int)Math.Round(clip.Value.Left*scale):inset,top=clip.HasValue?(int)Math.Round(clip.Value.Top*scale):inset,right=clip.HasValue?(int)Math.Round(clip.Value.Right*scale):w-inset+1,bottom=clip.HasValue?(int)Math.Round(clip.Value.Bottom*scale):h-inset+1,radius=(int)Math.Round(cornerRadius*2*scale);string key=left+","+top+","+right+","+bottom+","+radius;if(regionKey!=key){IntPtr region=CreateRoundRectRgn(left,top,right,bottom,radius,radius);if(SetWindowRgn(handle,region,true)){regionKey=key;RegionChanges++;}else DeleteObject(region);}if(((GetWindowLong(handle,-20)&8)!=0)!=box.Topmost){Native.SetWindowPos(handle,new IntPtr(box.Topmost?-1:-2),0,0,0,0,0x13);PositionChanges++;}Rect current;bool same=GetWindowRect(handle,out current)&&current.Left==r.Left&&current.Top==r.Top&&current.Right==r.Right&&current.Bottom==r.Bottom;bool adjacent=GetWindow(panel,2)==handle;
  // A tray hover layer is legitimately between the content and its main backdrop.
  if(!adjacent){var next=GetWindow(panel,2);adjacent=next!=IntPtr.Zero&&GetWindow(next,2)==handle&&box is ControlCenter&&((ControlCenter)box).IsTrayBackdrop(next);}
@@ -467,24 +583,59 @@ public sealed class CpuMeter {
  public double? Read(){long idle,kernel,user;if(!GetSystemTimes(out idle,out kernel,out user)){primed=false;return null;}long total=kernel+user;double? value=primed?Usage(idle-previousIdle,total-previousTotal):null;previousIdle=idle;previousTotal=total;primed=true;return value;}
 }
 public class StatusSample {
- public DateTimeOffset Time;public double? Cpu,Gpu;public long? Latency;public int GpuInstances;public string GpuEngine="",GpuError="",Gateway="",PingState="未启用";
+ public DateTimeOffset Time;
+ public double? Cpu,Gpu,GpuTemperature,ReceivedPerSecond,SentPerSecond;
+ public ulong ReceivedOctets,SentOctets;
+ public double NetworkSampleSeconds;
+ public bool HardwareNetwork;
+ public int GpuInstances;
+ public string GpuEngine="",GpuError="",NetworkInterface="",TemperatureSource="",TemperatureDevice="";
 }
 public sealed class StatusSampler:IDisposable {
- [DllImport("iphlpapi.dll")]static extern uint GetBestInterface(uint destination,out uint index);
- readonly CancellationTokenSource stop=new CancellationTokenSource();readonly Action<StatusSample> publish;readonly bool pingEnabled;
- public StatusSampler(bool ping,Action<StatusSample> callback){pingEnabled=ping;publish=callback;System.Threading.Tasks.Task.Run(new Func<System.Threading.Tasks.Task>(Run));}
- public static string Gateway(){try{uint index;uint destination=BitConverter.ToUInt32(new byte[]{1,1,1,1},0);bool best=GetBestInterface(destination,out index)==0;var adapters=System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().Where(x=>x.OperationalStatus==System.Net.NetworkInformation.OperationalStatus.Up);foreach(var adapter in adapters){var properties=adapter.GetIPProperties();var ip=properties.GetIPv4Properties();if(best&&(ip==null||ip.Index!=index))continue;var gateway=properties.GatewayAddresses.Select(x=>x.Address).FirstOrDefault(x=>x.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork&&!x.Equals(System.Net.IPAddress.Any));if(gateway!=null)return gateway.ToString();}}catch{}return "";}
- async System.Threading.Tasks.Task Run(){using(var gpu=new GpuMeter()){var cpu=new CpuMeter();cpu.Read();gpu.Read();int tick=0;long? latency=null;string gateway="",pingState=pingEnabled?"等待测速":"未启用";try{while(!stop.IsCancellationRequested){await System.Threading.Tasks.Task.Delay(2000,stop.Token).ConfigureAwait(false);var sample=new StatusSample{Cpu=cpu.Read(),Gpu=gpu.Read(),GpuInstances=gpu.Instances,GpuEngine=gpu.Engine,GpuError=gpu.Error};if(pingEnabled&&tick++%3==0){gateway=Gateway();latency=null;pingState="无可用IPv4网关";if(gateway!=""){try{using(var ping=new System.Net.NetworkInformation.Ping()){var reply=await ping.SendPingAsync(gateway,900).ConfigureAwait(false);pingState=reply.Status.ToString();if(reply.Status==System.Net.NetworkInformation.IPStatus.Success)latency=reply.RoundtripTime;}}catch(Exception ex){pingState=ex.GetType().Name;}}}sample.Latency=latency;sample.Gateway=gateway;sample.PingState=pingState;sample.Time=DateTimeOffset.Now;if(!stop.IsCancellationRequested)publish(sample);}}catch(OperationCanceledException){}catch(Exception ex){if(!stop.IsCancellationRequested)publish(new StatusSample{Time=DateTimeOffset.Now,GpuError=ex.GetType().Name,PingState="采样失败"});}finally{stop.Dispose();}}}
+ readonly CancellationTokenSource stop=new CancellationTokenSource();
+ readonly Action<StatusSample> publish;
+ public StatusSampler(Action<StatusSample> callback){
+  publish=callback;System.Threading.Tasks.Task.Run(new Func<System.Threading.Tasks.Task>(Run));
+ }
+ async System.Threading.Tasks.Task Run(){
+  using(var gpu=new GpuMeter())using(var temperature=new GpuTemperatureMeter()){
+   var cpu=new CpuMeter();
+   var network=new NetworkRateMeter();
+   double? received,sent;
+   cpu.Read();gpu.Read();network.Read(out received,out sent);
+   try{
+    while(!stop.IsCancellationRequested){
+     await System.Threading.Tasks.Task.Delay(1000,stop.Token).ConfigureAwait(false);
+     network.Read(out received,out sent);
+     var sample=new StatusSample{
+      Time=DateTimeOffset.Now,Cpu=cpu.Read(),Gpu=gpu.Read(),
+      ReceivedPerSecond=received,SentPerSecond=sent,NetworkInterface=network.InterfaceName,
+      HardwareNetwork=network.HardwareInterface,NetworkSampleSeconds=network.SampleSeconds,
+      ReceivedOctets=network.ReceivedOctets,SentOctets=network.SentOctets,
+      GpuTemperature=temperature.Read(),TemperatureSource=temperature.Source,TemperatureDevice=temperature.DeviceName,
+      GpuInstances=gpu.Instances,GpuEngine=gpu.Engine,GpuError=gpu.Error
+     };
+     if(!stop.IsCancellationRequested)publish(sample);
+    }
+   }catch(OperationCanceledException){}
+   catch(Exception ex){if(!stop.IsCancellationRequested)publish(new StatusSample{Time=DateTimeOffset.Now,GpuError=ex.GetType().Name});}
+   finally{stop.Dispose();}
+  }
+ }
  public void Dispose(){try{stop.Cancel();}catch(ObjectDisposedException){}}
 }
 public static class ControlGlassStyle { public static void Paint(Border frame,double value){value=Math.Max(0,Math.Min(1,value));frame.Background=new LinearGradientBrush(Color.FromArgb((byte)(1+32*value),35,49,64),Color.FromArgb((byte)(1+46*value),16,26,39),70);frame.BorderBrush=new SolidColorBrush(Color.FromArgb((byte)(150-85*value),235,248,255));} }
 public class StatusWidget:Window {
- Store S{get{return Program.S;}}Box box;Border shell;TextBlock clock,date,cpu,gpu,latency,hint;DispatcherTimer clockTimer;StatusSampler sampler;bool closing,dragging;public StatusSample Latest=new StatusSample();public bool GlassAccepted;
+ Store S{get{return Program.S;}}Box box;Border shell;TextBlock clock,date,cpu,gpu,networkSpeed,temperature,hint;DispatcherTimer clockTimer;StatusSampler sampler;bool closing,dragging;public StatusSample Latest=new StatusSample();public bool GlassAccepted;
  public StatusWidget(Box controller){box=controller;Title=Program.StatusCheck?"DeskBox 状态挂件验收":"DeskBox 桌面状态";Width=338;Height=202;WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.NoResize;AllowsTransparency=true;ShowInTaskbar=Program.StatusCheck;ShowActivated=false;Background=Brushes.Transparent;FontFamily=new FontFamily("Microsoft YaHei UI");Foreground=Brushes.White;
   shell=new Border{Margin=new Thickness(1),CornerRadius=new CornerRadius(12),BorderThickness=new Thickness(1),Padding=new Thickness(19,13,19,15)};ControlGlassStyle.Paint(shell,0);Content=shell;
   var layout=new Grid();shell.Child=layout;for(int i=0;i<5;i++)layout.RowDefinitions.Add(new RowDefinition{Height=i==3?new GridLength(1,GridUnitType.Star):GridLength.Auto});
-  var metrics=new Grid{Margin=new Thickness(0,0,0,13)};Grid.SetRow(metrics,0);layout.Children.Add(metrics);for(int i=0;i<4;i++)metrics.ColumnDefinitions.Add(new ColumnDefinition());
-  Metric(metrics,0,"FPS","N/A","没有接入游戏或视频帧率来源；不把屏幕刷新率或挂件重绘率当成游戏FPS");gpu=Metric(metrics,1,"GPU","N/A","Windows GPU Engine：所有适配器中最忙引擎的占用率");cpu=Metric(metrics,2,"CPU","N/A","Windows GetSystemTimes：整个系统的CPU忙碌时间占比");latency=Metric(metrics,3,"网关延迟","N/A","菜单可启用网关ICMP往返测速；不是游戏或互联网服务器延迟");
+  var metrics=new Grid{Tag="clock-live-metrics",Margin=new Thickness(0,0,0,9)};Grid.SetRow(metrics,0);layout.Children.Add(metrics);
+  foreach(double weight in new[]{1.85,1.25,.78,.78})metrics.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(weight,GridUnitType.Star)});
+  networkSpeed=Metric(metrics,0,"实时网速","↓ —\n↑ —","优先使用实体联网网卡，按网卡计数器显示上下行。");
+  temperature=Metric(metrics,1,"GPU 温度","N/A","由显卡驱动读取温度。");
+  cpu=Metric(metrics,2,"CPU","N/A","Windows GetSystemTimes 的系统 CPU 占用率。");
+  gpu=Metric(metrics,3,"GPU","N/A","Windows GPU Engine 计数器中最忙引擎的占用率。");
   var header=new DockPanel{LastChildFill=true};Grid.SetRow(header,1);layout.Children.Add(header);var actions=new StackPanel{Orientation=Orientation.Horizontal};DockPanel.SetDock(actions,System.Windows.Controls.Dock.Right);header.Children.Add(actions);var more=box.B("···",()=>OpenMenu());more.Padding=new Thickness(7,0,7,0);more.ToolTip="挂件设置";actions.Children.Add(more);var hide=box.B("×",HideWidget);hide.Padding=new Thickness(7,0,0,0);hide.ToolTip="隐藏挂件，可从DeskBox托盘恢复";actions.Children.Add(hide);var title=new TextBlock{Text="时钟",FontSize=11,Opacity=.66,Cursor=Cursors.SizeAll,Background=Brushes.Transparent,VerticalAlignment=VerticalAlignment.Center};header.Children.Add(title);
   clock=new TextBlock{FontFamily=new FontFamily("Segoe UI Light"),FontSize=45,FontWeight=FontWeights.Light,Margin=new Thickness(-2,0,0,0),Cursor=Cursors.SizeAll};Grid.SetRow(clock,2);layout.Children.Add(clock);
   date=new TextBlock{FontSize=12,Opacity=.86,VerticalAlignment=VerticalAlignment.Top};Grid.SetRow(date,3);layout.Children.Add(date);hint=new TextBlock{Text="按住背景或文字拖动 · 右键设置",FontSize=9,Opacity=.4,Margin=new Thickness(0,7,0,0)};Grid.SetRow(hint,4);layout.Children.Add(hint);
@@ -492,12 +643,28 @@ public class StatusWidget:Window {
   IsVisibleChanged+=(o,e)=>{if(IsVisible){clockTimer.Start();StartSampling();}else{clockTimer.Stop();StopSampling();}};Closing+=(o,e)=>{if(!closing&&!Program.StatusCheck){e.Cancel=true;HideWidget();}};Closed+=(o,e)=>{clockTimer.Stop();StopSampling();};PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Escape){HideWidget();e.Handled=true;}};
   clockTimer=new DispatcherTimer{Interval=TimeSpan.FromSeconds(1)};clockTimer.Tick+=(o,e)=>Tick();if(Program.StatusCheck)Closed+=(o,e)=>Application.Current.Shutdown();Application.Current.SessionEnding+=(o,e)=>PrepareExit();Application.Current.Exit+=(o,e)=>PrepareExit();
  }
- TextBlock Metric(Grid grid,int column,string label,string value,string tip){var block=new StackPanel{ToolTip=tip};Grid.SetColumn(block,column);grid.Children.Add(block);block.Children.Add(new TextBlock{Text=label,FontSize=9,Opacity=.55});var text=new TextBlock{Text=value,FontFamily=new FontFamily("Segoe UI"),FontSize=13,FontWeight=FontWeights.SemiBold,Margin=new Thickness(0,2,0,0)};block.Children.Add(text);return text;}
+ TextBlock Metric(Grid grid,int column,string label,string value,string tip){var block=new StackPanel{ToolTip=tip,Margin=new Thickness(0,0,4,0)};Grid.SetColumn(block,column);grid.Children.Add(block);block.Children.Add(new TextBlock{Text=label,FontSize=9,Opacity=.55});var text=new TextBlock{Text=value,FontFamily=new FontFamily("Segoe UI"),FontSize=12,LineHeight=15,TextTrimming=TextTrimming.CharacterEllipsis,FontWeight=FontWeights.SemiBold,Margin=new Thickness(0,2,0,0)};block.Children.Add(text);return text;}
  public static string Percent(double? value){return value.HasValue?value.Value.ToString("0",System.Globalization.CultureInfo.InvariantCulture)+" %":"N/A";}
  void Tick(){var now=DateTime.Now;clock.Text=now.ToString(S.Data.StatusSeconds?"HH:mm:ss":"HH:mm");clock.FontSize=S.Data.StatusSeconds?39:45;date.Text=now.ToString("M月d日  dddd",System.Globalization.CultureInfo.GetCultureInfo("zh-CN"));}
- void StartSampling(){StopSampling();Latest=new StatusSample();cpu.Text=gpu.Text=latency.Text="N/A";if(Program.Testing)return;StatusSampler current=null;current=new StatusSampler(S.Data.StatusPing,sample=>{try{Dispatcher.BeginInvoke(new Action(()=>{if(!IsVisible||!Object.ReferenceEquals(sampler,current))return;ApplySample(sample);}));}catch{}});sampler=current;}
+ void StartSampling(){StopSampling();ApplySample(new StatusSample());if(Program.Testing)return;StatusSampler current=null;current=new StatusSampler(sample=>{try{Dispatcher.BeginInvoke(new Action(()=>{if(!IsVisible||!Object.ReferenceEquals(sampler,current))return;ApplySample(sample);}));}catch{}});sampler=current;}
  void StopSampling(){var previous=sampler;sampler=null;if(previous!=null)previous.Dispose();}
- void ApplySample(StatusSample sample){Latest=sample;cpu.Text=Percent(sample.Cpu);gpu.Text=Percent(sample.Gpu);gpu.ToolTip="来源：Windows GPU Engine性能计数器；所有适配器中的最忙引擎。"+(sample.Gpu.HasValue?"":"\n暂不可用："+sample.GpuError);latency.Text=sample.Latency.HasValue?sample.Latency.Value.ToString()+" ms":"N/A";latency.ToolTip=sample.Gateway==""?"网关ICMP测速："+sample.PingState:"网关 "+sample.Gateway+" 的ICMP往返时间；不是游戏延迟。\n状态："+sample.PingState;WriteState();}
+ static string Rate(double? bytes){
+  if(!bytes.HasValue)return "—";
+  double scaled=bytes.Value*8/1000;int unit=0;
+  string[] units={"Kbps","Mbps","Gbps"};
+  while(scaled>=1000&&unit<units.Length-1){scaled/=1000;unit++;}
+  return scaled.ToString(scaled>=100?"0":"0.#",System.Globalization.CultureInfo.InvariantCulture)+" "+units[unit];
+ }
+ void ApplySample(StatusSample sample){
+  Latest=sample;cpu.Text=Percent(sample.Cpu);gpu.Text=Percent(sample.Gpu);
+  gpu.ToolTip=sample.Gpu.HasValue?"Windows GPU Engine 中最忙引擎的占用率。":sample.GpuError;
+  networkSpeed.Text="↓ "+Rate(sample.ReceivedPerSecond)+"\n↑ "+Rate(sample.SentPerSecond);
+  networkSpeed.ToolTip=String.IsNullOrEmpty(sample.NetworkInterface)?"等待联网网卡的统计数据。":
+   sample.NetworkInterface+(sample.HardwareNetwork?"（实体网卡）":"（非实体接口）")+"\n下行 "+Rate(sample.ReceivedPerSecond)+" · 上行 "+Rate(sample.SentPerSecond);
+  temperature.Text=sample.GpuTemperature.HasValue?sample.GpuTemperature.Value.ToString("0")+" °C":"N/A";
+  temperature.ToolTip=sample.GpuTemperature.HasValue?sample.TemperatureDevice+" · "+sample.TemperatureSource:"当前显卡驱动未提供可读取的温度。";
+  WriteState();
+ }
  bool CanDragFrom(DependencyObject node){while(node!=null){if(node is ButtonBase||node is TextBoxBase||node is ScrollBar)return false;if(node==this)return true;var content=node as FrameworkContentElement;node=content!=null?content.Parent:VisualTreeHelper.GetParent(node);}return false;}
  void DragWidget(MouseButtonEventArgs e){if(e.ClickCount!=1)return;try{dragging=true;DragMove();SavePosition();e.Handled=true;}catch(InvalidOperationException){}finally{dragging=false;}}
  public void SavePosition(){ClampPosition();S.Data.StatusX=Left;S.Data.StatusY=Top;S.Save();WriteState();}
@@ -508,27 +675,95 @@ public class StatusWidget:Window {
  public void Toggle(){if(IsVisible)HideWidget();else{Reveal();S.Save();}}
  public void PrepareExit(){closing=true;clockTimer.Stop();StopSampling();}
  public MenuItem VisibilityMenu(){var item=new MenuItem{Header="显示右上角状态挂件",IsCheckable=true,IsChecked=IsVisible};item.Click+=(o,e)=>Toggle();return item;}
- public ContextMenu Menu(){var menu=new ContextMenu{Placement=PlacementMode.MousePoint};var seconds=new MenuItem{Header="时钟显示秒钟",IsCheckable=true,IsChecked=S.Data.StatusSeconds};seconds.Click+=(o,e)=>{S.Data.StatusSeconds=seconds.IsChecked;S.Save();Tick();WriteState();};menu.Items.Add(seconds);var ping=new MenuItem{Header="启用网关延迟（非游戏延迟）",IsCheckable=true,IsChecked=S.Data.StatusPing};ping.Click+=(o,e)=>{S.Data.StatusPing=ping.IsChecked;S.Save();StartSampling();WriteState();};menu.Items.Add(ping);var reset=new MenuItem{Header="恢复到桌面右上角"};reset.Click+=(o,e)=>{S.Data.StatusX=S.Data.StatusY=-99999;S.Save();ApplyLayout();WriteState();};menu.Items.Add(reset);var hide=new MenuItem{Header="隐藏挂件（从托盘恢复）"};hide.Click+=(o,e)=>HideWidget();menu.Items.Add(hide);return menu;}
+ public ContextMenu Menu(){var menu=new ContextMenu{Placement=PlacementMode.MousePoint};var seconds=new MenuItem{Header="时钟显示秒钟",IsCheckable=true,IsChecked=S.Data.StatusSeconds};seconds.Click+=(o,e)=>{S.Data.StatusSeconds=seconds.IsChecked;S.Save();Tick();WriteState();};menu.Items.Add(seconds);var reset=new MenuItem{Header="恢复到桌面右上角"};reset.Click+=(o,e)=>{S.Data.StatusX=S.Data.StatusY=-99999;S.Save();ApplyLayout();WriteState();};menu.Items.Add(reset);var hide=new MenuItem{Header="隐藏挂件（从托盘恢复）"};hide.Click+=(o,e)=>HideWidget();menu.Items.Add(hide);return menu;}
  public void OpenMenu(){var menu=Menu();menu.PlacementTarget=this;menu.IsOpen=true;}
- public object State(){return new{time=DateTimeOffset.Now.ToString("o"),visible=IsVisible,clock=clock.Text,date=date.Text,bounds=new{Left,Top,Width,Height},cpu=Latest.Cpu,gpu=Latest.Gpu,gpuInstances=Latest.GpuInstances,gpuEngine=Latest.GpuEngine,gpuError=Latest.GpuError,fps=(int?)null,fpsReason="未接入游戏或视频帧率数据源",latency=Latest.Latency,gateway=Latest.Gateway,pingEnabled=S.Data.StatusPing,pingState=Latest.PingState,sampledAt=Latest.Time,cpuSource="Windows GetSystemTimes：整个系统的忙碌时间差值",gpuSource="Windows PDH GPU Engine(*)/Utilization Percentage：同引擎进程求和，再取所有适配器最忙引擎",latencySource="可选ICMP到当前默认路由的IPv4网关；不是互联网/游戏延迟",window=Native.WidgetInfo(this),appearance="control-center-clear-glass",fillAlpha=((LinearGradientBrush)shell.Background).GradientStops.Select(g=>g.Color.A).ToArray(),rimAlpha=((SolidColorBrush)shell.BorderBrush).Color.A,material=Native.PanelMaterialInfo(this),diagnosticOrdinaryWindow=Program.StatusCheck};}
+ public object State(){return new{time=DateTimeOffset.Now.ToString("o"),visible=IsVisible,clock=clock.Text,date=date.Text,bounds=new{Left,Top,Width,Height},cpu=Latest.Cpu,gpu=Latest.Gpu,gpuInstances=Latest.GpuInstances,gpuEngine=Latest.GpuEngine,gpuError=Latest.GpuError,
+   receivedBytesPerSecond=Latest.ReceivedPerSecond,sentBytesPerSecond=Latest.SentPerSecond,
+   networkInterface=Latest.NetworkInterface,hardwareNetwork=Latest.HardwareNetwork,networkSampleSeconds=Latest.NetworkSampleSeconds,
+   networkReceivedOctets=Latest.ReceivedOctets,networkSentOctets=Latest.SentOctets,
+   receivedRate=Rate(Latest.ReceivedPerSecond),sentRate=Rate(Latest.SentPerSecond),
+   gpuTemperatureCelsius=Latest.GpuTemperature,gpuTemperatureSource=Latest.TemperatureSource,gpuTemperatureDevice=Latest.TemperatureDevice,
+   sampledAt=Latest.Time,cpuSource="Windows GetSystemTimes",gpuSource="Windows PDH GPU Engine 中最忙引擎",
+   window=Native.WidgetInfo(this),appearance="control-center-clear-glass",fillAlpha=((LinearGradientBrush)shell.Background).GradientStops.Select(g=>g.Color.A).ToArray(),rimAlpha=((SolidColorBrush)shell.BorderBrush).Color.A,material=Native.PanelMaterialInfo(this),diagnosticOrdinaryWindow=Program.StatusCheck};}
  public void WriteState(){try{File.WriteAllText(System.IO.Path.Combine(S.Root,"status-widget-state.json"),new JavaScriptSerializer().Serialize(State()),Encoding.UTF8);}catch{}}
  IntPtr Hook(IntPtr h,int msg,IntPtr w,IntPtr l,ref bool handled){if(msg==0x83||msg==0x85){handled=true;return IntPtr.Zero;}if(msg==0x86){handled=true;return Native.ActivateWithoutFramePaint(h,w);}if(msg==0x7e||msg==0x2e0)Dispatcher.BeginInvoke(new Action(ApplyLayout));return IntPtr.Zero;}
 }
+// One bounded startup record, measured from managed entry; no window titles or paths.
+public static class StartupTiming {
+ static Stopwatch watch;static readonly List<object> stages=new List<object>();static string root;
+ public static void Begin(string dataRoot){root=dataRoot;watch=Stopwatch.StartNew();stages.Clear();stages.Add(new{stage="managed-entry",milliseconds=0.0});}
+ public static void Mark(string stage){if(watch==null)return;stages.Add(new{stage,milliseconds=Math.Round(watch.Elapsed.TotalMilliseconds,2)});DeferredDiagnostics.Write(System.IO.Path.Combine(root,"startup-timing.json"),new JavaScriptSerializer().Serialize(new{version=typeof(Program).Assembly.GetName().Version.ToString(),startedUtc=DateTime.UtcNow.Subtract(watch.Elapsed).ToString("o"),stages=stages.ToArray(),scope="From managed entry in this process; excludes Windows logon scheduling and is not a reboot benchmark."}));}
+}
 public class Program:Application {
- public static DesktopFiles DesktopFiles;public static FileShelf Files;public static TaskbarVisibility Taskbar;public static ComponentHub Components;public static ScreenshotLine Shots;public static bool ShotsCheck;public static Store S;public static bool HoldCheck;public static bool Testing,UiCheck,LiveCheck,FrostCheck,AppearanceCheck,ResizeCheck,FrameCheck,StatusCheck,PanelCheck,DockInputCheck,RunningProbe,ControlCheck;public static StatusWidget Status;public static ControlCenter Control;public static string OutDir;static Mutex mutex;
+ public static DesktopFiles DesktopFiles;public static DesktopMoveHistory DesktopMoves;public static FileShelf Files;public static TaskbarVisibility Taskbar;public static ComponentHub Components;public static ScreenshotLine Shots;public static bool ShotsCheck;public static Store S;public static bool HoldCheck;public static bool Testing,UiCheck,LiveCheck,FrostCheck,AppearanceCheck,ResizeCheck,FrameCheck,StatusCheck,PanelCheck,DockInputCheck,RunningProbe,ControlCheck;public static StatusWidget Status;public static ControlCenter Control;public static string OutDir;static Mutex mutex;
  [STAThread]public static void Main(string[] args){
   if(!args.Contains("--hardware-render"))System.Windows.Media.RenderOptions.ProcessRenderMode=System.Windows.Interop.RenderMode.SoftwareOnly;ShotsCheck=args.Contains("--shots-check");HoldCheck=args.Contains("--f6-check");Testing=args.Contains("--test");FrameCheck=args.Contains("--frame-check");LiveCheck=args.Contains("--live-check")||FrameCheck;FrostCheck=args.Contains("--frost-check");AppearanceCheck=args.Contains("--appearance-check");ControlCheck=args.Contains("--control-check");RunningProbe=args.Contains("--running-probe");DockInputCheck=args.Contains("--dock-input-check")||RunningProbe||ControlCheck;PanelCheck=args.Contains("--panel-check")||DockInputCheck;ResizeCheck=args.Contains("--resize-check")||PanelCheck;UiCheck=args.Contains("--ui-check")||LiveCheck;string root=AppPaths.DataRoot;
   int ix=Array.IndexOf(args,"--data-dir");if(ix>=0&&ix+1<args.Length)root=System.IO.Path.GetFullPath(args[ix+1]);
   StatusCheck=args.Contains("--status-check");bool codexFocusCheck=args.Contains("--codex-focus-check"),startStateCheck=args.Contains("--start-state-check"),startMenuCheck=args.Contains("--start-menu-check");if((args.Contains("--taskbar-check")||args.Contains("--components-check")||Testing||ShotsCheck||HoldCheck||ResizeCheck||FrameCheck||StatusCheck||codexFocusCheck||startStateCheck||startMenuCheck)&&ix<0)throw new InvalidOperationException("窗口验收必须指定隔离数据目录");
-  OutDir=System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"验证");S=new Store(root);if(args.Contains("--taskbar-state")){File.WriteAllText(System.IO.Path.Combine(root,"taskbar-snapshot.json"),new JavaScriptSerializer().Serialize(TaskbarVisibility.Snapshot()),Encoding.UTF8);return;}if(args.Contains("--taskbar-check")){TaskbarProbe.Run();return;}if(startMenuCheck){var startApp=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};startApp.Startup+=(o,e)=>{SystemStart.Open();var end=new DispatcherTimer{Interval=TimeSpan.FromSeconds(2)};end.Tick+=(a,b)=>{end.Stop();startApp.Shutdown();};end.Start();};startApp.Run();return;}if(startStateCheck){File.WriteAllText(System.IO.Path.Combine(root,"start-menu-inspect.json"),new JavaScriptSerializer().Serialize(SystemStart.Inspect()),Encoding.UTF8);return;}if(codexFocusCheck){CodexFocusProbe.Run();return;}
-  bool own;mutex=new Mutex(true,(ShotsCheck||Testing||LiveCheck||StatusCheck||PanelCheck)?"Local\\DeskBox.Test."+Guid.NewGuid():"Local\\DeskBox.User",out own);
-  if(!own){Native.PostMessage(new IntPtr(0xffff),Native.ShowMessage,IntPtr.Zero,IntPtr.Zero);mutex.Dispose();return;}
+   bool steamSmoke=SteamEdition.Enabled&&args.Contains("--steam-smoke");
+   bool steamMigration=SteamEdition.Enabled&&args.Contains("--import-portable");
+   if(steamSmoke&&(ix<0||DesktopStorage.Under(root,SteamEdition.DataRoot)||
+       (Directory.Exists(root)&&Directory.EnumerateFileSystemEntries(root).Any())))
+       throw new ArgumentException("Steam 验收必须指定一个全新的隔离数据目录");
+   if(SteamEdition.Enabled&&(args.Contains("--taskbar-check")||args.Contains("--import-taskbar")))return;
+   string instanceName=steamSmoke?"Local\\Rushbin.Steam.Test."+Guid.NewGuid():SteamEdition.Enabled?"Local\\Rushbin.Steam.User":(ShotsCheck||Testing||LiveCheck||StatusCheck||PanelCheck)?"Local\\DeskBox.Test."+Guid.NewGuid():"Local\\DeskBox.User";
+   if(SteamEdition.Enabled){
+    bool first;mutex=new Mutex(true,instanceName,out first);
+    if(!first){if(!steamMigration)Native.PostMessage(new IntPtr(0xffff),Native.ShowMessage,IntPtr.Zero,IntPtr.Zero);else MessageBox.Show("请先从托盘退出 Steam 候选版，再迁移旧数据。","Rushbin");mutex.Dispose();return;}
+   }
+   if(steamMigration){SteamSetup.ImportPortable(root);mutex.Dispose();return;}
+   OutDir=System.IO.Path.Combine(SteamEdition.Enabled?root:AppDomain.CurrentDomain.BaseDirectory,"验证");StartupTiming.Begin(root);S=new Store(root);if(args.Contains("--taskbar-state")){File.WriteAllText(System.IO.Path.Combine(root,"taskbar-snapshot.json"),new JavaScriptSerializer().Serialize(TaskbarVisibility.Snapshot()),Encoding.UTF8);return;}if(args.Contains("--taskbar-check")){TaskbarProbe.Run();return;}if(startMenuCheck){var startApp=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};startApp.Startup+=(o,e)=>{SystemStart.Open();var end=new DispatcherTimer{Interval=TimeSpan.FromSeconds(2)};end.Tick+=(a,b)=>{end.Stop();startApp.Shutdown();};end.Start();};startApp.Run();return;}if(startStateCheck){File.WriteAllText(System.IO.Path.Combine(root,"start-menu-inspect.json"),new JavaScriptSerializer().Serialize(SystemStart.Inspect()),Encoding.UTF8);return;}if(codexFocusCheck){CodexFocusProbe.Run();return;}
+   if(!SteamEdition.Enabled){
+    bool own;mutex=new Mutex(true,instanceName,out own);
+    if(!own){Native.PostMessage(new IntPtr(0xffff),Native.ShowMessage,IntPtr.Zero,IntPtr.Zero);mutex.Dispose();return;}
+   }
+   StartupTiming.Mark("settings-loaded");
   if(S.NeedsDockMigration){if(File.Exists(S.FilePath))File.Copy(S.FilePath,S.FilePath+".before-custom-dock-"+DateTime.Now.ToString("yyyyMMddHHmmssfff"));S.Save();}
   if(S.Data.LayoutVersion<2){if(File.Exists(S.FilePath))File.Copy(S.FilePath,S.FilePath+".before-dock-"+DateTime.Now.ToString("yyyyMMddHHmmssfff"),false);S.Data.LayoutVersion=2;S.Data.Width=740;S.Data.Opacity=.14;S.Data.Collapsed=false;S.Save();}
   if(args.Contains("--import-taskbar")){var links=TaskbarLinks.Read(S.Root);int count=S.ImportPinnedLinks(links);File.WriteAllText(System.IO.Path.Combine(S.Root,"taskbar-import.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),source=@"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband\FavoritesResolve（只读），原TaskBar目录提供显示名称",imported=count,apps=links.Select(p=>new{name=TaskbarLinks.Title(p),path=p,identity=Native.LinkIdentity(p)}).ToArray(),pins=S.Data.DockPins.Count}),Encoding.UTF8);}
   var app=new Program{ShutdownMode=ShutdownMode.OnExplicitShutdown};app.DispatcherUnhandledException+=(o,e)=>{e.Handled=true;try{File.AppendAllText(System.IO.Path.Combine(S.Root,"runtime-errors.log"),DateTimeOffset.Now.ToString("o")+Environment.NewLine+e.Exception+Environment.NewLine);}catch{}MessageBox.Show(e.Exception.Message,"DeskBox");};
-  app.Startup+=(o,e)=>{FrostSkin.Install(app);if(ShotsCheck){Shots=new ScreenshotLine(S.Root);app.MainWindow=Shots;Shots.Start();return;}var box=new Box();var dock=new DockBar(box);box.Dock=dock;app.MainWindow=dock;if(!StatusCheck){dock.PrepareGlass();dock.Show();box.InitializeController();}Status=new StatusWidget(box);if((S.Data.StatusVisible&&!PanelCheck)||StatusCheck)Status.Reveal();if(!Testing&&!PanelCheck&&!StatusCheck&&!UiCheck)dock.StartControlCard();if(!Testing&&!PanelCheck&&!StatusCheck&&!UiCheck){Shots=new ScreenshotLine(S.Root);Shots.Start();}if(!Testing&&!PanelCheck&&!StatusCheck&&!UiCheck){Files=new FileShelf(S.Root);Files.Start();DesktopFiles=new DesktopFiles(S,Files.Files,DesktopStorage.Desktop,()=>{box.Render();Files.RefreshFromDesktop();});DesktopFiles.PathChanged+=box.UpdateFileHistory;DesktopFiles.Sync();Files.RefreshFromDesktop();app.Exit+=(a,b)=>DesktopFiles.Dispose();Components=new ComponentHub(box,dock);Components.Apply();Taskbar=new TaskbarVisibility();if(args.Contains("--components-check"))Components.ShowProbeHost();}if((!ResizeCheck&&!StatusCheck)||PanelCheck)new DesktopLayer(box,dock);if(ResizeCheck&&!LiveCheck&&!ControlCheck)box.Dispatcher.BeginInvoke(new Action(()=>{box.Reveal();if(!PanelCheck)FrostProbe.Start(box);}),DispatcherPriority.ApplicationIdle);if(ControlCheck)box.Dispatcher.BeginInvoke(new Action(()=>dock.OpenControls()),DispatcherPriority.ApplicationIdle);if(Testing)box.Dispatcher.BeginInvoke(new Action(()=>{box.Reveal();Tests.Run(box);}),DispatcherPriority.ApplicationIdle);if(LiveCheck)box.Dispatcher.BeginInvoke(new Action(()=>LiveProbe.Start(box)),DispatcherPriority.ApplicationIdle);if(FrostCheck)box.Dispatcher.BeginInvoke(new Action(()=>FrostProbe.Start(box)),DispatcherPriority.ApplicationIdle);if(AppearanceCheck)box.Dispatcher.BeginInvoke(new Action(()=>AppearanceProbe.Run(box)),DispatcherPriority.ApplicationIdle);};
+  app.Startup+=async(o,e)=>{
+   FrostSkin.Install(app);
+   if(ShotsCheck){Shots=new ScreenshotLine(S.Root);app.MainWindow=Shots;Shots.Start();return;}
+   var box=new Box();var dock=new DockBar(box);box.Dock=dock;app.MainWindow=dock;
+   bool normal=!Testing&&!PanelCheck&&!StatusCheck&&!UiCheck;
+   bool firstFrame=true;dock.ContentRendered+=(a,b)=>{if(firstFrame){firstFrame=false;StartupTiming.Mark("dock-first-frame");}};
+   if(!StatusCheck){dock.PrepareGlass();dock.Show();}
+   // Return to WPF for the first frame before initializing other components.
+   if(normal)await Dispatcher.Yield(DispatcherPriority.Background);
+   if(!StatusCheck)box.InitializeController();
+   Status=new StatusWidget(box);if((S.Data.StatusVisible&&!PanelCheck)||StatusCheck)Status.Reveal();StartupTiming.Mark("clock-initialized");
+   if(normal){
+    await Dispatcher.Yield(DispatcherPriority.Background);
+    dock.StartControlCard();StartupTiming.Mark("control-initialized");
+    await Dispatcher.Yield(DispatcherPriority.Background);
+    Shots=new ScreenshotLine(S.Root);Shots.Start();StartupTiming.Mark("shots-initialized");
+    await Dispatcher.Yield(DispatcherPriority.Background);
+     Files=new FileShelf(S.Root);if(SteamEdition.Enabled)Files.steamOwner=box;Files.Start();StartupTiming.Mark("files-initialized");
+    await Dispatcher.Yield(DispatcherPriority.Background);
+     string desktopRoot=steamSmoke?Directory.CreateDirectory(System.IO.Path.Combine(root,"smoke-desktop")).FullName:DesktopStorage.Desktop;
+     DesktopFiles=new DesktopFiles(S,Files.Files,desktopRoot,()=>{box.RefreshFromDesktop();Files.RefreshFromDesktop();});
+     if(SteamEdition.Enabled)DesktopMoves=new DesktopMoveHistory(S.Root,DesktopFiles);
+    DesktopFiles.PathChanged+=box.UpdateFileHistory;DesktopFiles.Sync();
+    app.Exit+=(a,b)=>DesktopFiles.Dispose();
+    Components=new ComponentHub(box,dock);Components.Apply();
+     if(!SteamEdition.Enabled)Taskbar=new TaskbarVisibility();
+     if(args.Contains("--components-check"))Components.ShowProbeHost();
+   }
+   if((!ResizeCheck&&!StatusCheck)||PanelCheck)new DesktopLayer(box,dock);StartupTiming.Mark("startup-complete");
+    ScheduleChecks(box,dock);
+    if(steamSmoke)SteamSetup.ScheduleSmoke(box,dock);
+    else if(SteamEdition.Enabled&&normal)SteamSetup.Onboarding(box);
+  };
   app.Exit+=(o,e)=>mutex.Dispose();app.Run();
+ }
+ static void ScheduleChecks(Box box,DockBar dock){
+   if(ResizeCheck&&!LiveCheck&&!ControlCheck)box.Dispatcher.BeginInvoke(new Action(()=>{box.Reveal();if(!PanelCheck)FrostProbe.Start(box);}),DispatcherPriority.ApplicationIdle);
+   if(ControlCheck)box.Dispatcher.BeginInvoke(new Action(()=>dock.OpenControls()),DispatcherPriority.ApplicationIdle);
+   if(Testing)box.Dispatcher.BeginInvoke(new Action(()=>{box.Reveal();Tests.Run(box);}),DispatcherPriority.ApplicationIdle);
+   if(LiveCheck)box.Dispatcher.BeginInvoke(new Action(()=>LiveProbe.Start(box)),DispatcherPriority.ApplicationIdle);
+   if(FrostCheck)box.Dispatcher.BeginInvoke(new Action(()=>FrostProbe.Start(box)),DispatcherPriority.ApplicationIdle);
+   if(AppearanceCheck)box.Dispatcher.BeginInvoke(new Action(()=>AppearanceProbe.Run(box)),DispatcherPriority.ApplicationIdle);
  }
 }
 // Button Click occurs on release. Cancel it after a drag or the second press
@@ -550,6 +785,7 @@ public sealed class DockClickButton:Button {
 }
 public sealed class EntryGesture {
  Point down;bool cancelled;
+ internal Point Grip{get{return down;}}
  public void Press(Point point,int count){down=point;cancelled=count!=1;}
  public bool Move(Point point){if(cancelled)return false;if(Math.Abs(point.X-down.X)<SystemParameters.MinimumHorizontalDragDistance&&Math.Abs(point.Y-down.Y)<SystemParameters.MinimumVerticalDragDistance)return false;cancelled=true;return true;}
  public bool Click(){return !cancelled;}
@@ -572,7 +808,7 @@ public class Box:Window {
  public ScrollViewer FilesScroll{get{return scroller;}}
  public DockBar Dock;public bool GlassAccepted;public void ReleasePanelHotkey(){if(source!=null&&hotkey){Native.UnregisterHotKey(source.Handle,1);hotkey=false;}}public void InitializeController(){new WindowInteropHelper(this).EnsureHandle();if(!Program.Testing)InstallTray();}
  GlassSurface glass;public readonly IconMotion EntryMotion=new IconMotion();public Slider GlassSlider;TextBlock glassValue;DispatcherTimer glassSave;public readonly PanelBackdrop Backdrop;
- Store S{get{return Program.S;}}Border shell;StackPanel groupBar;WrapPanel tiles;TextBox search;Grid searchHost;TextBlock status;ScrollViewer scroller;Button namesButton;Forms.NotifyIcon tray;HwndSource source;bool hotkey,closing,panelDragging;DispatcherTimer saveSize,dragScroll;Border insertionMarker;Canvas insertionOverlay;string dragSource;Point dragViewportPoint;Stack<Model> undo=new Stack<Model>();
+ Store S{get{return Program.S;}}Border shell;StackPanel groupBar;WrapPanel tiles;TextBox search;Grid searchHost;TextBlock status;ScrollViewer scroller;Button namesButton;Forms.NotifyIcon tray;HwndSource source;bool hotkey,closing,panelDragging,panelRenderPending;TileSortPreview panelSort;DispatcherTimer saveSize,dragScroll;Border insertionMarker;Canvas insertionOverlay;string dragSource;Point dragViewportPoint;Stack<Model> undo=new Stack<Model>();
  public Brush TextBrush=new SolidColorBrush(Color.FromRgb(240,246,252));
  public Box(){
   Backdrop=new PanelBackdrop(this);FocusVisualStyle=null;Title=Program.PanelCheck?"rushbin 面板交互验收":Program.ResizeCheck?"DeskBox 窗口缩放验收":"rushbin 桌面收纳箱";WindowStyle=WindowStyle.None;AllowsTransparency=true;Background=Brushes.Transparent;ShowInTaskbar=Program.ResizeCheck;ResizeMode=ResizeMode.CanResize;MinWidth=500;MinHeight=250;Topmost=S.Data.Topmost;FontFamily=new FontFamily("Microsoft YaHei UI");FontSize=12;Foreground=TextBrush;
@@ -590,11 +826,12 @@ public class Box:Window {
   var grip=new Thumb{Focusable=false,IsTabStop=false,Tag="panel-drag-handle",Width=64,Height=7,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Top,Margin=new Thickness(0,-8,0,0),Cursor=Cursors.SizeAll,ToolTip="拖动面板"};var gf=new FrameworkElementFactory(typeof(Border));gf.SetValue(Border.CornerRadiusProperty,new CornerRadius(3));gf.SetValue(Border.BackgroundProperty,new SolidColorBrush(Color.FromArgb(95,240,250,255)));grip.Template=new ControlTemplate(typeof(Thumb)){VisualTree=gf};Panel.SetZIndex(grip,10);layout.Children.Add(grip);grip.DragDelta+=(o,e)=>{Left+=e.HorizontalChange;Top+=e.VerticalChange;};grip.DragCompleted+=(o,e)=>SavePosition();
   var gs=new ScrollViewer{FocusVisualStyle=null,Tag="panel-groups-scroll",HorizontalScrollBarVisibility=ScrollBarVisibility.Auto,VerticalScrollBarVisibility=ScrollBarVisibility.Disabled,Margin=new Thickness(0,0,0,6),MaxHeight=56};groupBar=new StackPanel{Orientation=Orientation.Horizontal};gs.Content=groupBar;Grid.SetRow(gs,1);layout.Children.Add(gs);
   tiles=new WrapPanel{Margin=new Thickness(0,8,0,4)};var itemsHost=new Grid();itemsHost.Children.Add(tiles);insertionOverlay=new Canvas{IsHitTestVisible=false};insertionMarker=new Border{Width=3,CornerRadius=new CornerRadius(1.5),Background=new SolidColorBrush(Color.FromRgb(139,240,217)),Visibility=Visibility.Collapsed};insertionOverlay.Children.Add(insertionMarker);itemsHost.Children.Add(insertionOverlay);scroller=new ScrollViewer{FocusVisualStyle=null,Tag="panel-files-scroll",Content=itemsHost,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroller,2);layout.Children.Add(scroller);InstallPanelSort();
+  panelSort=new TileSortPreview(tiles,layout,"panel-drag-image",button=>button.Tag as string);
   var footer=new Grid{Margin=new Thickness(0,6,0,0)};footer.ColumnDefinitions.Add(new ColumnDefinition());footer.ColumnDefinitions.Add(new ColumnDefinition{Width=GridLength.Auto});Grid.SetRow(footer,3);layout.Children.Add(footer);status=new TextBlock{Opacity=.6,FontSize=10,VerticalAlignment=VerticalAlignment.Center,TextTrimming=TextTrimming.CharacterEllipsis};footer.Children.Add(status);var glassControl=new StackPanel{Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(14,0,0,0),Tag="glass-control"};Grid.SetColumn(glassControl,1);footer.Children.Add(glassControl);glassControl.Children.Add(new TextBlock{Text="玻璃质感",FontSize=10,Opacity=.7,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(0,0,8,0)});GlassSlider=new Slider{Style=(Style)Application.Current.FindResource("GlassSlider"),Minimum=0,Maximum=100,Value=S.Data.PanelGlass,Width=125,Height=22,SmallChange=1,LargeChange=10,IsMoveToPointEnabled=true,VerticalAlignment=VerticalAlignment.Center,ToolTip="0% 清透玻璃 · 100% 磨砂玻璃",Tag="panel-glass-slider"};glassControl.Children.Add(GlassSlider);glassValue=new TextBlock{Text=S.Data.PanelGlass.ToString("0")+"%",Width=35,FontSize=10,TextAlignment=TextAlignment.Right,VerticalAlignment=VerticalAlignment.Center,Opacity=.75};glassControl.Children.Add(glassValue);glassSave=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(350)};glassSave.Tick+=(o,e)=>{glassSave.Stop();S.Save();};GlassSlider.ValueChanged+=(o,e)=>{S.Data.PanelGlass=e.NewValue;glassValue.Text=e.NewValue.ToString("0")+"%";glass.Paint();ApplyFrost();glassSave.Stop();glassSave.Start();};
-  AllowDrop=true;DragOver+=(o,e)=>{e.Effects=!e.Data.GetDataPresent("DeskBox.Item")&&ShellDrop.CanRead(e.Data)?(Program.DesktopFiles!=null&&ShellDrop.Read(e.Data).Any(DesktopFiles.Ordinary)?((e.AllowedEffects&DragDropEffects.Move)!=0?DragDropEffects.Move:DragDropEffects.None):((e.AllowedEffects&DragDropEffects.Link)!=0?DragDropEffects.Link:(e.AllowedEffects&DragDropEffects.Copy)!=0?DragDropEffects.Copy:DragDropEffects.None)):DragDropEffects.None;e.Handled=true;};Drop+=(o,e)=>{if(e.Data.GetDataPresent("DeskBox.Item")){e.Handled=true;return;}if(ShellDrop.CanRead(e.Data)){Receive(ShellDrop.Read(e.Data));e.Handled=true;}};
+  AllowDrop=true;DragOver+=(o,e)=>{e.Effects=!e.Data.GetDataPresent("DeskBox.Item")&&ShellDrop.CanRead(e.Data)?(SteamEdition.Enabled?SteamEdition.ReferenceEffect(e.AllowedEffects):Program.DesktopFiles!=null&&ShellDrop.Read(e.Data).Any(DesktopFiles.Ordinary)?((e.AllowedEffects&DragDropEffects.Move)!=0?DragDropEffects.Move:DragDropEffects.None):((e.AllowedEffects&DragDropEffects.Link)!=0?DragDropEffects.Link:(e.AllowedEffects&DragDropEffects.Copy)!=0?DragDropEffects.Copy:DragDropEffects.None)):DragDropEffects.None;e.Handled=true;};Drop+=(o,e)=>{if(e.Data.GetDataPresent("DeskBox.Item")){e.Handled=true;return;}if(ShellDrop.CanRead(e.Data)&&(!SteamEdition.Enabled||SteamEdition.ReferenceEffect(e.AllowedEffects)!=DragDropEffects.None)){Receive(ShellDrop.Read(e.Data));e.Handled=true;}};
   PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Escape){MinimizePanel();e.Handled=true;}if(e.Key==Key.Z&&(Keyboard.Modifiers&ModifierKeys.Control)!=0){Undo();e.Handled=true;}};
   Loaded+=(o,e)=>{ApplyLayout();Render();if(S.Warning!="")Toast(S.Warning);};
-  SourceInitialized+=(o,e)=>{source=HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);source.AddHook(Hook);ApplyFrost();Native.DesktopWidget(this);if(!Program.Testing){hotkey=Native.RegisterHotKey(source.Handle,1,0x4000,0x74);File.WriteAllText(System.IO.Path.Combine(S.Root,"hotkey-state.json"),new JavaScriptSerializer().Serialize(new{key="F5",registered=hotkey,modifiers="MOD_NOREPEAT，无Ctrl/Alt修饰"}),Encoding.UTF8);}};
+  SourceInitialized+=(o,e)=>{source=HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);source.AddHook(Hook);ApplyFrost();Native.DesktopWidget(this);if(!SteamEdition.Enabled&&!Program.Testing){hotkey=Native.RegisterHotKey(source.Handle,1,0x4000,0x74);File.WriteAllText(System.IO.Path.Combine(S.Root,"hotkey-state.json"),new JavaScriptSerializer().Serialize(new{key="F5",registered=hotkey,modifiers="MOD_NOREPEAT，无Ctrl/Alt修饰"}),Encoding.UTF8);}};
   SizeChanged+=(o,e)=>{Native.ClipGlass(this,22);if(searchHost!=null)searchHost.Visibility=ActualWidth<650?Visibility.Collapsed:Visibility.Visible;};ContentRendered+=(o,e)=>Native.ClipGlass(this,22);
   Closing+=(o,e)=>{if(!closing){e.Cancel=true;Hide();}};
   IsVisibleChanged+=(o,e)=>{if(Program.Components!=null)Program.Components.Observe("panel",IsVisible);Backdrop.Update();if(!IsVisible){EntryMotion.Reset();if(glassSave.IsEnabled){glassSave.Stop();S.Save();}}};LocationChanged+=(o,e)=>Backdrop.Update();SizeChanged+=(o,e)=>Backdrop.Update();Activated+=(o,e)=>Dispatcher.BeginInvoke(new Action(()=>Backdrop.Update()));Deactivated+=(o,e)=>Dispatcher.BeginInvoke(new Action(()=>Backdrop.Update()));
@@ -628,41 +865,96 @@ public class Box:Window {
  public void DismissForOutside(){if(IsVisible&&!panelDragging&&Native.IsWindowEnabled(new WindowInteropHelper(this).Handle))MinimizePanel();}
  public void ToggleNames(){S.Data.ShowNames=!S.Data.ShowNames;Save();RenderItems();UpdateNamesButton();}
  void UpdateNamesButton(){if(namesButton==null)return;namesButton.Content=S.Data.ShowNames?"隐藏名称":"显示名称";namesButton.ToolTip=S.Data.ShowNames?"点击隐藏图标下方的名称":"点击显示图标下方的名称；悬停始终可查看名称";}
- public void Render(){UpdateNamesButton();RenderGroups();RenderItems();if(Dock!=null)Dock.Render();}
+ bool desktopRenderPending;
+ public void RefreshFromDesktop(){if(IsVisible)Render();else{desktopRenderPending=true;if(Dock!=null)Dock.Render();}}
+ public void Render(){desktopRenderPending=false;UpdateNamesButton();RenderGroups();RenderItems();if(Dock!=null)Dock.Render();}
  List<string> PanelViewIds(){return S.Filter(search==null?"":search.Text.Trim()).Select(item=>item.Id).ToList();}
- List<Rect> PanelTileRects(){return tiles.Children.OfType<Button>().Select(button=>new Rect(button.TranslatePoint(new Point(),tiles),button.RenderSize)).ToList();}
+ List<Rect> PanelTileRects(){return tiles.Children.OfType<Button>().Select(button=>TileSortPreview.Bounds(button)).ToList();}
  public int PanelInsertionSlot(Point point){var rects=PanelTileRects();for(int i=0;i<rects.Count;i++){var rect=rects[i];if(point.Y<rect.Bottom){if(point.X<rect.Left+rect.Width/2)return i;if(i==rects.Count-1||rects[i+1].Top>rect.Top+1)return i+1;}}return rects.Count;}
  void PaintSortHint(Point point){var rects=PanelTileRects();if(rects.Count==0){insertionMarker.Visibility=Visibility.Collapsed;return;}int slot=PanelInsertionSlot(point);Rect rect;double x;if(slot==rects.Count||(slot>0&&rects[slot].Top>rects[slot-1].Top+1&&point.Y<rects[slot].Top)){rect=rects[slot-1];x=rect.Right+2;}else{rect=rects[slot];x=rect.Left-2;}var origin=tiles.TranslatePoint(new Point(x,rect.Top+2),insertionOverlay);Canvas.SetLeft(insertionMarker,origin.X);Canvas.SetTop(insertionMarker,origin.Y);insertionMarker.Height=Math.Max(20,rect.Height-4);insertionMarker.Visibility=Visibility.Visible;}
- void ClearSortHint(){dragSource=null;if(dragScroll!=null)dragScroll.Stop();if(insertionMarker!=null)insertionMarker.Visibility=Visibility.Collapsed;}
+ void PreviewPanelSort(Point point){
+  if(panelDragging)panelSort.Preview(tiles.Children.OfType<Button>().ToArray(),PanelInsertionSlot(point),point);
+  else PaintSortHint(point);
+ }
+ internal async System.Threading.Tasks.Task VerifyPanelSortMotion(Action<string,bool> check){
+  var buttons=tiles.Children.OfType<Button>().ToArray();var first=buttons[0];var second=buttons[1];
+  var origin=TileSortPreview.Bounds(second);
+  var point=new Point(origin.Right-2,origin.Top+origin.Height/2);
+  int slot=PanelInsertionSlot(point);var order=PanelViewIds().ToArray();
+  panelSort.Start(first,new Point(first.ActualWidth/2,first.ActualHeight/2));
+  try{
+   panelSort.Preview(buttons,slot,point);
+   await System.Threading.Tasks.Task.Delay(240);
+   var ghost=AppearanceProbe.Visuals<Image>(this).Single(image=>Object.Equals(image.Tag,"panel-drag-image"));
+   double initialX=Canvas.GetLeft(ghost);
+   panelSort.Preview(buttons,slot,point+new Vector(3,0));
+   check("共用拖动预览保持半透明原图并用跟手拖影和平滑让位",first.Opacity==TileDragMotion.PreviewOpacity&&Math.Abs(Canvas.GetLeft(ghost)-initialX-3)<.01&&
+    (second.TranslatePoint(new Point(),tiles)-origin.Location).Length>1&&PanelInsertionSlot(point)==slot&&order.SequenceEqual(PanelViewIds()));
+   Capture(System.IO.Path.Combine(Program.OutDir,"主面板拖动预览.png"));
+  }finally{panelSort.Finish(null,false);}
+  await System.Threading.Tasks.Task.Delay(240);
+  check("拖动取消移除拖影并恢复图标位置且不保存新顺序",first.Opacity==1&&
+   (second.TranslatePoint(new Point(),tiles)-origin.Location).Length<.01&&order.SequenceEqual(PanelViewIds())&&
+   !AppearanceProbe.Visuals<Image>(this).Any(image=>Object.Equals(image.Tag,"panel-drag-image")));
+ }
+ void ClearSortHint(){dragSource=null;if(panelSort!=null)panelSort.Reset();if(dragScroll!=null)dragScroll.Stop();if(insertionMarker!=null)insertionMarker.Visibility=Visibility.Collapsed;}
  string PanelDragId(IDataObject data){try{if(!data.GetDataPresent("DeskBox.Item"))return null;string id=data.GetData("DeskBox.Item") as string;return id!=null&&PanelViewIds().Contains(id)?id:null;}catch{return null;}}
- void InstallPanelSort(){dragScroll=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(60)};dragScroll.Tick+=(o,e)=>{if(dragSource==null){dragScroll.Stop();return;}double delta=dragViewportPoint.Y<28?-14:dragViewportPoint.Y>scroller.ActualHeight-28?14:0;if(delta==0){dragScroll.Stop();return;}scroller.ScrollToVerticalOffset(scroller.VerticalOffset+delta);scroller.UpdateLayout();PaintSortHint(scroller.TranslatePoint(dragViewportPoint,tiles));};
-  scroller.AddHandler(DragDrop.PreviewDragOverEvent,new DragEventHandler((o,e)=>{if(!e.Data.GetDataPresent("DeskBox.Item"))return;dragSource=PanelDragId(e.Data);e.Effects=dragSource==null?DragDropEffects.None:DragDropEffects.Move;e.Handled=true;if(dragSource==null){ClearSortHint();return;}dragViewportPoint=e.GetPosition(scroller);PaintSortHint(e.GetPosition(tiles));if(dragViewportPoint.Y<28||dragViewportPoint.Y>scroller.ActualHeight-28)dragScroll.Start();else dragScroll.Stop();}),true);
-  scroller.AddHandler(DragDrop.PreviewDropEvent,new DragEventHandler((o,e)=>{if(!e.Data.GetDataPresent("DeskBox.Item"))return;string id=PanelDragId(e.Data);int slot=PanelInsertionSlot(e.GetPosition(tiles));ClearSortHint();e.Handled=true;e.Effects=id==null?DragDropEffects.None:DragDropEffects.Move;if(id!=null)ReorderPanel(id,slot);}),true);
+ void InstallPanelSort(){dragScroll=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(60)};dragScroll.Tick+=(o,e)=>{if(dragSource==null){dragScroll.Stop();return;}double delta=dragViewportPoint.Y<28?-14:dragViewportPoint.Y>scroller.ActualHeight-28?14:0;if(delta==0){dragScroll.Stop();return;}scroller.ScrollToVerticalOffset(scroller.VerticalOffset+delta);scroller.UpdateLayout();PreviewPanelSort(scroller.TranslatePoint(dragViewportPoint,tiles));};
+  scroller.AddHandler(DragDrop.PreviewDragOverEvent,new DragEventHandler((o,e)=>{if(!e.Data.GetDataPresent("DeskBox.Item"))return;dragSource=PanelDragId(e.Data);e.Effects=dragSource==null?DragDropEffects.None:SteamEdition.Enabled?SteamEdition.ReferenceEffect(e.AllowedEffects):DragDropEffects.Move;e.Handled=true;if(dragSource==null){ClearSortHint();return;}dragViewportPoint=e.GetPosition(scroller);PreviewPanelSort(e.GetPosition(tiles));if(dragViewportPoint.Y<28||dragViewportPoint.Y>scroller.ActualHeight-28)dragScroll.Start();else dragScroll.Stop();}),true);
+  scroller.AddHandler(DragDrop.PreviewDropEvent,new DragEventHandler((o,e)=>{if(!e.Data.GetDataPresent("DeskBox.Item"))return;string id=PanelDragId(e.Data);var point=e.GetPosition(tiles);int slot=PanelInsertionSlot(point);
+   e.Handled=true;e.Effects=id==null?DragDropEffects.None:SteamEdition.Enabled?SteamEdition.ReferenceEffect(e.AllowedEffects):DragDropEffects.Move;
+   if(e.Effects!=DragDropEffects.None){if(panelDragging)PreviewPanelSort(point);ReorderPanel(id,slot);}
+   if(!panelDragging)ClearSortHint();}),true);
   scroller.AddHandler(DragDrop.PreviewDragLeaveEvent,new DragEventHandler((o,e)=>{var p=e.GetPosition(scroller);if(p.X<0||p.Y<0||p.X>scroller.ActualWidth||p.Y>scroller.ActualHeight)ClearSortHint();}),true);Closed+=(o,e)=>ClearSortHint();}
  public void ReorderPanel(string id,int slot){Guard(()=>{var ids=PanelViewIds();int from=ids.IndexOf(id);slot=Math.Max(0,Math.Min(ids.Count,slot));if(from<0||slot-(from<slot?1:0)==from)return;double offset=scroller.VerticalOffset;Snapshot();if(S.ReorderInView(id,ids,slot)){RenderItems();scroller.ScrollToVerticalOffset(offset);Toast("顺序已保存 · Ctrl+Z 可撤销");}});}
  void RenderGroups(){groupBar.Children.Clear();AddGroupTab("all","全部");foreach(var g in S.Data.Groups)AddGroupTab(g.Id,g.Name);groupBar.Children.Add(B("＋ 分组",()=>{string name=Ask("新建分组","给分组起个名字","");if(name==null)return;Snapshot();S.Data.Active=S.NewGroup(name);Save();Render();}));}
  void AddGroupTab(string id,string name){int count=id=="all"?S.Data.Items.Count:S.Data.Items.Count(x=>x.Group==id);var b=B(name+"  "+count,()=>{S.Data.Active=id;S.Save();RenderGroups();RenderItems();});if(S.Data.Active==id)b.Foreground=new SolidColorBrush(Color.FromRgb(139,240,217));b.ToolTip=id=="all"?"查看全部文件":"将文件或箱内入口拖到这里，放入此分组";
-  b.AllowDrop=id!="all";b.PreviewDragOver+=(o,e)=>{if(id=="all")return;if(ShellDrop.CanRead(e.Data)||e.Data.GetDataPresent("DeskBox.Item")){e.Effects=DragDropEffects.Link;e.Handled=true;}};
-  b.Drop+=(o,e)=>{if(id=="all")return;Guard(()=>{Snapshot();S.Data.Active=id;if(e.Data.GetDataPresent("DeskBox.Item"))S.Move((string)e.Data.GetData("DeskBox.Item"),id);else if(ShellDrop.CanRead(e.Data)){int bad;S.Add(ShellDrop.Read(e.Data),id,out bad);}Save();Render();});e.Handled=true;};
+  b.AllowDrop=id!="all";b.PreviewDragOver+=(o,e)=>{if(id=="all")return;if(ShellDrop.CanRead(e.Data)||e.Data.GetDataPresent("DeskBox.Item")){e.Effects=SteamEdition.Enabled?SteamEdition.ReferenceEffect(e.AllowedEffects):DragDropEffects.Link;e.Handled=true;}};
+  b.Drop+=(o,e)=>{if(id=="all"||(SteamEdition.Enabled&&SteamEdition.ReferenceEffect(e.AllowedEffects)==DragDropEffects.None))return;Guard(()=>{Snapshot();S.Data.Active=id;if(e.Data.GetDataPresent("DeskBox.Item"))S.Move((string)e.Data.GetData("DeskBox.Item"),id);else if(ShellDrop.CanRead(e.Data)){int bad;S.Add(ShellDrop.Read(e.Data),id,out bad);}Save();Render();});e.Handled=true;};
   if(id!="all"){var menu=new ContextMenu();MI(menu,"重命名分组",()=>{var g=S.Data.Groups.First(x=>x.Id==id);string value=Ask("重命名分组","分组名称",g.Name);if(value==null)return;value=value.Trim();if(value.Length==0||value.Length>30||S.Data.Groups.Any(x=>x.Id!=id&&String.Equals(x.Name,value,StringComparison.OrdinalIgnoreCase)))throw new InvalidDataException("名称为空、过长或已存在");Snapshot();g.Name=value;Save();Render();});if(id!="inbox")MI(menu,"移除分组（入口转入未分组）",()=>{Snapshot();S.DeleteGroup(id);Render();});b.ContextMenu=menu;}groupBar.Children.Add(b);
  }
- public void RenderItems(){if(tiles==null)return;EntryMotion.Clear();tiles.Children.Clear();string q=search==null?"":search.Text.Trim();var list=S.Filter(q).ToArray();
-  if(list.Length==0){var empty=new StackPanel{Margin=new Thickness(24,20,24,10)};empty.Children.Add(new TextBlock{Text=q.Length>0?"没有找到匹配的文件":"把文件拖到这里",FontSize=23,Opacity=.8});empty.Children.Add(new TextBlock{Text=q.Length>0?"可以按名称或完整路径搜索":"文件、图片、文档、程序、文件夹，都可以收纳。\n桌面外的普通文件会移动到桌面，右键可以重命名或移动分组。",Margin=new Thickness(0,10,0,0),Opacity=.5,LineHeight=23});tiles.Children.Add(empty);}
+ public void RenderItems(){if(tiles==null)return;if(panelDragging){panelRenderPending=true;return;}EntryMotion.Clear();tiles.Children.Clear();string q=search==null?"":search.Text.Trim();var list=S.Filter(q).ToArray();
+  if(list.Length==0){var empty=new StackPanel{Margin=new Thickness(24,20,24,10)};empty.Children.Add(new TextBlock{Text=q.Length>0?"没有找到匹配的文件":"把文件拖到这里",FontSize=23,Opacity=.8});empty.Children.Add(new TextBlock{Text=q.Length>0?"可以按名称或完整路径搜索":(SteamEdition.Enabled?"拖入会添加入口，保留文件的原位置。":"文件、图片、文档、程序、文件夹，都可以收纳。\n桌面外的普通文件会移动到桌面，右键可以重命名或移动分组。"),Margin=new Thickness(0,10,0,0),Opacity=.5,LineHeight=23});tiles.Children.Add(empty);}
   foreach(var item in list){var it=item;var stack=new StackPanel{Width=82,Margin=new Thickness(1,3,1,3)};var icon=new Image{Source=Native.Icon(it.Path),Width=42,Height=42,IsHitTestVisible=false};var iconSlot=new Grid{Width=82,Height=60};iconSlot.Children.Add(icon);stack.Children.Add(iconSlot);stack.Children.Add(new TextBlock{Text=it.Name,Tag="entry-name",Visibility=S.Data.ShowNames?Visibility.Visible:Visibility.Collapsed,Foreground=TextBrush,TextAlignment=TextAlignment.Center,TextTrimming=TextTrimming.CharacterEllipsis,TextWrapping=TextWrapping.NoWrap,FontSize=11,Margin=new Thickness(2,0,2,0)});
    var gesture=new EntryGesture();var tile=B("",()=>{if(gesture.Click())Open(it);});tile.Content=stack;tile.Tag=it.Id;tile.Padding=new Thickness(2,5,2,5);tile.Margin=new Thickness(2);tile.ToolTip=it.Name+"\n"+it.Path+(EntryPath.Exists(it.Path)?"":"\n原文件不存在或设备未连接");bool dragArmed=false;EntryMotion.Add(tile,icon);
    tile.PreviewMouseLeftButtonDown+=(o,e)=>{gesture.Press(e.GetPosition(tile),e.ClickCount);dragArmed=e.ClickCount==1;};tile.PreviewMouseLeftButtonUp+=(o,e)=>dragArmed=false;tile.PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Space||e.Key==Key.Enter)gesture.Press(new Point(),1);};
-   tile.AddHandler(UIElement.PreviewMouseMoveEvent,new MouseEventHandler((o,e)=>{if(e.LeftButton!=MouseButtonState.Pressed||!dragArmed||!gesture.Move(e.GetPosition(tile)))return;dragArmed=false;e.Handled=true;tile.ReleaseMouseCapture();var data=new DataObject();data.SetData("DeskBox.Item",it.Id);if(EntryPath.IsShell(it.Path))data.SetData(ShellDrop.Format,new MemoryStream(ShellDrop.FromPaths(new[]{it.Path})));else data.SetData(DataFormats.FileDrop,new[]{it.Path});tile.Opacity=.45;EntryMotion.Suspend(true);panelDragging=true;try{DragDrop.DoDragDrop(tile,data,DragDropEffects.Link|DragDropEffects.Move);}finally{panelDragging=false;tile.Opacity=1;gesture.Cancel();EntryMotion.Suspend(false);ClearSortHint();}}),true);
+   tile.AddHandler(UIElement.PreviewMouseMoveEvent,new MouseEventHandler((o,e)=>{if(e.LeftButton!=MouseButtonState.Pressed||!dragArmed||!gesture.Move(e.GetPosition(tile)))return;dragArmed=false;e.Handled=true;tile.ReleaseMouseCapture();var data=new DataObject();data.SetData("DeskBox.Item",it.Id);if(EntryPath.IsShell(it.Path))data.SetData(ShellDrop.Format,new MemoryStream(ShellDrop.FromPaths(new[]{it.Path})));else data.SetData(DataFormats.FileDrop,new[]{it.Path});EntryMotion.Suspend(true);panelDragging=true;
+    DragDropEffects result=DragDropEffects.None;
+    try{result=panelSort.Run(tile,gesture.Grip,data,SteamEdition.Enabled?DragDropEffects.Link|DragDropEffects.Copy:DragDropEffects.Link|DragDropEffects.Move);}
+    finally{
+     gesture.Cancel();panelDragging=false;
+     Action rebuild=null;
+     if(panelRenderPending){panelRenderPending=false;double offset=scroller.VerticalOffset;
+      rebuild=()=>{RenderItems();scroller.ScrollToVerticalOffset(offset);scroller.UpdateLayout();};}
+     panelSort.Finish(rebuild,result!=DragDropEffects.None);
+     EntryMotion.Suspend(false);ClearSortHint();
+    }}),true);
    tile.ContextMenu=new ContextMenu();tile.ContextMenuOpening+=(o,e)=>{var built=ItemMenu(it);var target=tile.ContextMenu;target.Items.Clear();while(built.Items.Count>0){var child=built.Items[0];built.Items.RemoveAt(0);target.Items.Add(child);}};tiles.Children.Add(tile);
   }
   status.Text="当前 "+list.Length+" 项 · 总计 "+S.Data.Items.Count+" 项";
  }
  public ContextMenu ItemMenu(Item it){
   var menu=new ContextMenu();menu.Items.Add(NewFileMenu());MI(menu,"打开",()=>Open(it));MI(menu,EntryPath.IsShell(it.Path)?"在资源管理器中打开":"在资源管理器中定位",()=>{if(EntryPath.IsShell(it.Path))Open(it);else Process.Start(new ProcessStartInfo("explorer.exe","/select,\""+it.Path+"\""){UseShellExecute=true});});var move=new MenuItem{Header="移动到分组"};foreach(var g in S.Data.Groups){string id=g.Id;var sub=new MenuItem{Header=g.Name,IsCheckable=true,IsChecked=it.Group==id};sub.Click+=(o,e)=>Guard(()=>{Snapshot();S.Move(it.Id,id);Render();});move.Items.Add(sub);}menu.Items.Add(move);
+   AddDesktopMoveMenu(menu,it);
    if(Program.DesktopFiles!=null&&Program.DesktopFiles.Physical(it.Path))MI(menu,"重命名文件",()=>Program.DesktopFiles.PromptRename(this,it));if(Program.DesktopFiles==null||!Program.DesktopFiles.Physical(it.Path))MI(menu,"更改显示名称",()=>{string name=Ask("更改显示名称","只更改箱内名称，不重命名原文件",it.Name);if(String.IsNullOrWhiteSpace(name))return;Snapshot();it.Name=name.Trim();Save();RenderItems();});if(Program.DesktopFiles==null||!Program.DesktopFiles.Physical(it.Path))MI(menu,"从收纳箱移除（保留原文件）",()=>{Snapshot();S.Data.Items.Remove(it);Save();Render();});menu.Items.Add(RecycleMenu(it));
    if(Program.DesktopFiles!=null&&Program.DesktopFiles.Physical(it.Path)){MI(menu,"复制",()=>Program.DesktopFiles.Copy(it,false));MI(menu,"剪切",()=>Program.DesktopFiles.Copy(it,true));MI(menu,"属性",()=>DesktopFileProperties.Show(this,it.Path));MI(menu,"更多 Windows 操作…",()=>Dispatcher.BeginInvoke(new Action(()=>Guard(()=>NativeFileMenu.Show(this,it.Path,false,()=>Program.DesktopFiles.PromptRename(this,it)))),DispatcherPriority.Background));}MI(menu,S.Data.DockPins.Contains(it.Id)?"从底栏取消固定":"固定到底栏",()=>PinEntry(it.Id,!S.Data.DockPins.Contains(it.Id)));
   return menu;
  }
- public void UpdateFileHistory(string before,string after,bool directory){foreach(var previous in undo){if(after==null)RecycleEntry.RemoveEntries(previous,before,directory);else DesktopFiles.Rewrite(previous,before,after,directory);}}
+  public void AddDesktopMoveMenu(ContextMenu menu,Item item){
+   if(Program.DesktopMoves==null||!Program.DesktopMoves.CanOffer(item.Path))return;
+   MI(menu,"移动原文件到桌面…",()=>{
+    var move=Program.DesktopMoves.Prepare(item.Path);
+    if(MessageBox.Show("将移动原文件。\n\n原位置："+move.Source+"\n\n目标："+move.Destination,"移动到桌面",MessageBoxButton.OKCancel,MessageBoxImage.Question)!=MessageBoxResult.OK)return;
+    Program.DesktopMoves.Execute(move);Toast("文件已移动，可以从设置撤销。");
+   });
+  }
+  void UndoDesktopMove(){
+   var move=Program.DesktopMoves.Latest();
+   if(move==null){Toast("没有可撤销的桌面移动");return;}
+   if(MessageBox.Show("将文件恢复到原位置。\n\n当前："+move.Destination+"\n\n原位置："+move.Source,"撤销桌面移动",MessageBoxButton.OKCancel,MessageBoxImage.Question)!=MessageBoxResult.OK)return;
+   Program.DesktopMoves.Undo();Render();Toast("已恢复原文件位置。");
+  }
+  public void UpdateFileHistory(string before,string after,bool directory){foreach(var previous in undo){if(after==null)RecycleEntry.RemoveEntries(previous,before,directory);else DesktopFiles.Rewrite(previous,before,after,directory);}}
  public MenuItem RecycleMenu(Item item){string reason=RecycleEntry.Unavailable(item.Path);var menu=new MenuItem{Header="删除文件（移到回收站）",Tag="recycle-file",IsEnabled=reason=="",ToolTip=reason==""?"将此入口对应的文件移到Windows回收站":reason};menu.Click+=(o,e)=>Guard(()=>RecycleItem(item));return menu;}
  void RecycleItem(Item item){string reason=RecycleEntry.Unavailable(item.Path);if(reason!="")throw new InvalidOperationException(reason);string path=System.IO.Path.GetFullPath(item.Path);bool folder=Directory.Exists(path);string note=folder?"文件夹及其中的内容将移到Windows回收站。":String.Equals(System.IO.Path.GetExtension(path),".lnk",StringComparison.OrdinalIgnoreCase)?"仅移除这个快捷方式，不删除它指向的应用或文件。":"这个文件将移到Windows回收站。";TextBox input;var dialog=FrostSkin.Prompt(this,"移到回收站？",item.Name+"\n"+path+"\n\n"+note+"\n可在Windows回收站中还原。","",out input);input.Visibility=Visibility.Collapsed;dialog.MaxHeight=SystemParameters.WorkArea.Height-32;dialog.Loaded+=(o,e)=>{var buttons=AppearanceProbe.Visuals<Button>(dialog);var confirm=buttons.FirstOrDefault(b=>Object.Equals(b.Content,"确定"));if(confirm!=null){confirm.Content="移到回收站";confirm.IsDefault=false;}var cancel=buttons.FirstOrDefault(b=>Object.Equals(b.Content,"取消"));if(cancel!=null)cancel.Focus();};if(dialog.ShowDialog()!=true)return;try{var result=RecycleEntry.Send(path,new WindowInteropHelper(this).Handle);try{File.WriteAllText(System.IO.Path.Combine(S.Root,"recycle-last-operation.json"),new JavaScriptSerializer().Serialize(result),Encoding.UTF8);}catch{}if(Program.DesktopFiles!=null)Program.DesktopFiles.Removed(result.Path,result.Directory);RecycleEntry.RemoveEntries(S.Data,result.Path,result.Directory);foreach(var previous in undo)RecycleEntry.RemoveEntries(previous,result.Path,result.Directory);Save();Render();Toast("已移到回收站，可从Windows回收站还原");}catch(OperationCanceledException){Toast("已取消，收纳入口保留");}}
  public void Receive(string[] paths){Guard(()=>{Snapshot();int bad;int n=S.Add(paths,S.Data.Active,out bad);if(S.Data.Collapsed){S.Data.Collapsed=false;Save();ApplyLayout();}Render();Toast("已添加 "+n+" 项"+(bad>0?"，跳过 "+bad+" 个无法访问的路径":"；重复入口不会再次添加"));});}
@@ -670,27 +962,27 @@ public class Box:Window {
  public void ImportTaskbar(){Guard(()=>{var links=TaskbarLinks.Read(S.Root);if(links.Length==0){Toast("没有读取到任务栏固定应用");return;}Snapshot();int count=S.ImportPinnedLinks(links);Render();Toast("已将任务栏固定应用添加到底栏："+count+" 项；原固定入口已保留");});}
  public void ReorderPin(string from,string to){Guard(()=>{Snapshot();S.OrderPin(from,to);if(Dock!=null)Dock.Render();});}
  public void PinPaths(string[] paths){Guard(()=>{Snapshot();int bad;S.Add(paths,S.Data.Active,out bad);foreach(string path in paths){try{string full=EntryPath.Normalize(path);var item=S.Data.Items.FirstOrDefault(x=>(String.Equals(x.Path,full,StringComparison.OrdinalIgnoreCase)||String.Equals(x.SourcePath,full,StringComparison.OrdinalIgnoreCase)));if(item!=null&&!S.Data.DockPins.Contains(item.Id))S.Data.DockPins.Add(item.Id);}catch{}}Save();Render();Toast("已添加到底栏；右键图标可取消固定");});}
- public void Open(Item i){Guard(()=>{if(!EntryPath.Exists(i.Path))throw new FileNotFoundException("原文件不存在或设备未连接：\n"+i.Path);if(Dock!=null&&Dock.Attention.TryOpen(i.Id))return;bool activated;if(CodexActivation.TryReuse(i.Path,out activated)){if(!activated)Toast("已找到 Codex 现有窗口；Windows 暂未允许切换前台，未重复启动。");return;}if(EntryPath.IsShell(i.Path))Process.Start(new ProcessStartInfo("explorer.exe",i.Path){UseShellExecute=true});else Process.Start(new ProcessStartInfo(i.Path){UseShellExecute=true});});}
- public void AddFiles(){var dlg=new Microsoft.Win32.OpenFileDialog{Multiselect=true,Title="添加到 rushbin（桌面外文件将复制到桌面）",Filter="所有文件|*.*"};if(dlg.ShowDialog(this)==true)Receive(dlg.FileNames);}
- void AddFolder(){using(var dlg=new Forms.FolderBrowserDialog{Description="选择要收纳的文件夹（不会搬动原文件）"})if(dlg.ShowDialog()==Forms.DialogResult.OK)Receive(new[]{dlg.SelectedPath});}
+ public void Open(Item i){Guard(()=>{if(!EntryPath.Exists(i.Path))throw new FileNotFoundException("原文件不存在或设备未连接：\n"+i.Path);if(RunningApps.TryRestoreHiddenClash(i.Path))return;if(Dock!=null&&Dock.Attention.TryOpen(i.Id))return;bool activated;if(CodexActivation.TryReuse(i.Path,out activated)){if(!activated)Toast("正在唤回已有 Codex，未启动新实例。");return;}if(CodexFrostBridge.TryEnsure(i.Path))return;if(CodexActivation.IsEntry(i.Path)&&!File.Exists(DockAttention.Target(i.Path))){using(var launched=Process.Start(new ProcessStartInfo("explorer.exe",@"shell:AppsFolder\"+CodexActivation.AppId){UseShellExecute=true})){}return;}if(EntryPath.IsShell(i.Path))Process.Start(new ProcessStartInfo("explorer.exe",i.Path){UseShellExecute=true});else Process.Start(new ProcessStartInfo(i.Path){UseShellExecute=true});});}
+ public void AddFiles(){var dlg=new Microsoft.Win32.OpenFileDialog{Multiselect=true,Title=SteamEdition.Enabled?"添加到 Rushbin（保留原位置）":"添加到 rushbin（桌面外文件将移动到桌面）",Filter="所有文件|*.*"};if(dlg.ShowDialog(this)==true)Receive(dlg.FileNames);}
+ void AddFolder(){using(var dlg=new Forms.FolderBrowserDialog{Description=SteamEdition.Enabled?"选择要收纳的文件夹（保留原位置）":"选择要收纳的文件夹（将移到桌面）"})if(dlg.ShowDialog()==Forms.DialogResult.OK)Receive(new[]{dlg.SelectedPath});}
  public string CreateEntry(NewFileType type,string name,string target=""){string path=NewFiles.Create(S,type,name,target);Snapshot();int bad;S.Add(new[]{path},S.Data.Active,out bad);search.Clear();Render();Toast("已新建："+System.IO.Path.GetFileName(path)+" · 保存在 "+NewFiles.Folder(S));return path;}
  void NewFile(NewFileType type){Guard(()=>{string target="";if(type.Kind=="Shortcut"){var dialog=new Microsoft.Win32.OpenFileDialog{Title="选择快捷方式指向的文件",Filter="所有文件|*.*"};if(dialog.ShowDialog(this)!=true)return;target=dialog.FileName;}string name=Ask("新建"+type.Label,"文件名（扩展名自动添加）\n保存位置："+NewFiles.Folder(S),NewFiles.Suggest(S,type));if(name==null)return;CreateEntry(type,name,target);});}
  public MenuItem NewFileMenu(){var menu=new MenuItem{Header="新建",Tag="new-files"};menu.Items.Add(new MenuItem{Header="正在加载…",IsEnabled=false});bool populated=false;menu.SubmenuOpened+=(sender,args)=>{if(populated)return;populated=true;menu.Items.Clear();foreach(var type in NewFiles.Types()){var selected=type;var item=new MenuItem{Header=type.Label,Tag="new-file:"+type.Extension};var icon=type.Kind=="Folder"?Native.Icon(Environment.GetFolderPath(Environment.SpecialFolder.Windows)):Native.FileTypeIcon(type.Extension);if(icon!=null)item.Icon=new Image{Source=icon,Width=17,Height=17};item.Click+=(o,e)=>NewFile(selected);menu.Items.Add(item);}};return menu;}
  public void SortDesktop(string order){Snapshot();Func<Item,string> key=item=>item.Name;var sorted=order=="修改时间"?S.Data.Items.OrderByDescending(item=>EntryPath.IsShell(item.Path)?DateTime.MinValue:File.GetLastWriteTime(item.Path)).ToList():order=="类型"?S.Data.Items.OrderBy(item=>Directory.Exists(item.Path)?"":System.IO.Path.GetExtension(item.Path)).ThenBy(item=>item.Name,StringComparer.CurrentCultureIgnoreCase).ToList():S.Data.Items.OrderBy(key,StringComparer.CurrentCultureIgnoreCase).ToList();S.Data.Items=sorted;Save();Render();}
- public ContextMenu PanelMenu(){var menu=new ContextMenu();var view=new MenuItem{Header="查看"};var names=new MenuItem{Header="显示 / 隐藏文件名称"};names.Click+=(o,e)=>ToggleNames();view.Items.Add(names);menu.Items.Add(view);var sort=new MenuItem{Header="排序方式"};foreach(string order in new[]{"名称","类型","修改时间"}){string chosen=order;var option=new MenuItem{Header=order};option.Click+=(o,e)=>Guard(()=>SortDesktop(chosen));sort.Items.Add(option);}menu.Items.Add(sort);menu.Items.Add(NewFileMenu());MI(menu,"粘贴",()=>{if(Program.DesktopFiles!=null)Program.DesktopFiles.Paste();});MI(menu,"刷新",()=>{if(Program.DesktopFiles!=null)Program.DesktopFiles.Sync();Render();});MI(menu,"Windows 桌面菜单…",()=>Dispatcher.BeginInvoke(new Action(()=>Guard(()=>NativeFileMenu.Show(this,DesktopStorage.Desktop,true))),DispatcherPriority.Background));MI(menu,"打开新建文件保存位置",()=>{string folder=NewFiles.Folder(S);Directory.CreateDirectory(folder);Process.Start(new ProcessStartInfo(folder){UseShellExecute=true});});MI(menu,"显示设置",()=>ControlHardware.Settings("ms-settings:display"));MI(menu,"个性化",()=>ControlHardware.Settings("ms-settings:personalization"));MI(menu,"设置…",()=>Settings());return menu;}
+ public ContextMenu PanelMenu(){var menu=new ContextMenu();var view=new MenuItem{Header="查看"};var names=new MenuItem{Header="显示 / 隐藏文件名称"};names.Click+=(o,e)=>ToggleNames();view.Items.Add(names);menu.Items.Add(view);var sort=new MenuItem{Header="排序方式"};foreach(string order in new[]{"名称","类型","修改时间"}){string chosen=order;var option=new MenuItem{Header=order};option.Click+=(o,e)=>Guard(()=>SortDesktop(chosen));sort.Items.Add(option);}menu.Items.Add(sort);menu.Items.Add(NewFileMenu());MI(menu,"粘贴",()=>{if(Program.DesktopFiles!=null)Program.DesktopFiles.Paste(S);});MI(menu,"刷新",()=>{if(Program.DesktopFiles!=null)Program.DesktopFiles.Sync();Render();});MI(menu,"Windows 桌面菜单…",()=>Dispatcher.BeginInvoke(new Action(()=>Guard(()=>NativeFileMenu.Show(this,DesktopStorage.Desktop,true))),DispatcherPriority.Background));MI(menu,"打开新建文件保存位置",()=>{string folder=NewFiles.Folder(S);Directory.CreateDirectory(folder);Process.Start(new ProcessStartInfo(folder){UseShellExecute=true});});MI(menu,"显示设置",()=>ControlHardware.Settings("ms-settings:display"));MI(menu,"个性化",()=>ControlHardware.Settings("ms-settings:personalization"));MI(menu,"设置…",()=>Settings());return menu;}
  void MI(ContextMenu menu,string label,Action action){var m=new MenuItem{Header=label};m.Click+=(o,e)=>Guard(action);menu.Items.Add(m);}
- public ContextMenu SettingsMenu(){var menu=new ContextMenu();if(Program.Taskbar!=null)MI(menu,Program.Taskbar.Hidden?"恢复系统任务栏  F12":"隐藏系统任务栏  F12",Program.Taskbar.Toggle);if(Dock!=null)MI(menu,"控制中心",Dock.OpenControls);MI(menu,"添加文件夹…",AddFolder);MI(menu,"导入任务栏固定应用",ImportTaskbar);MI(menu,"撤销上一次操作  Ctrl+Z",Undo);var top=new MenuItem{Header="始终置顶",IsCheckable=true,IsChecked=S.Data.Topmost};top.Click+=(o,e)=>{S.Data.Topmost=top.IsChecked;Save();ApplyLayout();};menu.Items.Add(top);
+ public ContextMenu SettingsMenu(){var menu=new ContextMenu();if(Program.Taskbar!=null)MI(menu,Program.Taskbar.Hidden?"恢复系统任务栏  F12":"隐藏系统任务栏  F12",Program.Taskbar.Toggle);if(Dock!=null)MI(menu,"控制中心",Dock.OpenControls);MI(menu,"添加文件夹…",AddFolder);if(!SteamEdition.Enabled)MI(menu,"导入任务栏固定应用",ImportTaskbar);MI(menu,"撤销收纳操作  Ctrl+Z",Undo);if(Program.DesktopMoves!=null)MI(menu,"撤销上次移动到桌面…",UndoDesktopMove);if(SteamEdition.Enabled){MI(menu,"快速开始",()=>SteamSetup.ShowGuide(this));if(Program.Components!=null)MI(menu,"组件与快捷键",Program.Components.ToggleManager);}var top=new MenuItem{Header="始终置顶",IsCheckable=true,IsChecked=S.Data.Topmost};top.Click+=(o,e)=>{S.Data.Topmost=top.IsChecked;Save();ApplyLayout();};menu.Items.Add(top);
   var system=new MenuItem{Header="添加系统入口"};foreach(string path in new[]{EntryPath.Computer,EntryPath.RecycleBin}){string itemPath=path;var entry=new MenuItem{Header=EntryPath.Title(path)};entry.Click+=(o,e)=>Receive(new[]{itemPath});system.Items.Add(entry);}menu.Items.Insert(1,system);
   if(Program.Status!=null)menu.Items.Add(Program.Status.VisibilityMenu());if(Program.Shots!=null)menu.Items.Add(Program.Shots.VisibilityMenu());
-  if(Dock!=null)menu.Items.Add(Dock.Attention.Menu());top.Header="面板始终置顶";MI(menu,"打开配置文件夹",()=>Process.Start(new ProcessStartInfo(S.Root){UseShellExecute=true}));MI(menu,"收起（Esc；F5 唤出主面板）",MinimizePanel);MI(menu,"退出 DeskBox",Quit);return menu;
+  if(Dock!=null&&!SteamEdition.Enabled)menu.Items.Add(Dock.Attention.Menu());top.Header="面板始终置顶";MI(menu,"打开配置文件夹",()=>Process.Start(new ProcessStartInfo(S.Root){UseShellExecute=true}));MI(menu,SteamEdition.Enabled?"收起面板（Esc）":"收起（Esc；F5 唤出主面板）",MinimizePanel);MI(menu,SteamEdition.Enabled?"退出 Rushbin":"退出 DeskBox",Quit);return menu;
  }
  public void Settings(FrameworkElement target=null){var menu=SettingsMenu();menu.PlacementTarget=target??this;menu.IsOpen=true;}
  public string Ask(string title,string hint,string value){TextBox input;var w=FrostSkin.Prompt(this,title,hint,value,out input);w.Loaded+=(o,e)=>{input.Focus();input.SelectAll();};return w.ShowDialog()==true?input.Text:null;}
- public ContextMenu TrayMenu(){var m=new ContextMenu{Placement=PlacementMode.MousePoint};if(Program.Taskbar!=null)MI(m,Program.Taskbar.Hidden?"恢复系统任务栏  F12":"隐藏系统任务栏  F12",Program.Taskbar.Toggle);MI(m,IsVisible?"收起收纳箱  F5":"唤回收纳箱  F5",TogglePanel);if(Dock!=null)MI(m,"控制中心",Dock.OpenControls);if(Program.Status!=null)m.Items.Add(Program.Status.VisibilityMenu());if(Program.Shots!=null)m.Items.Add(Program.Shots.VisibilityMenu());if(Program.Control!=null)m.Items.Add(Program.Control.VisibilityMenu());if(Dock!=null)m.Items.Add(Dock.Attention.Menu());MI(m,"导入任务栏固定应用",ImportTaskbar);MI(m,"添加文件",()=>{Reveal();AddFiles();});MI(m,"退出",Quit);return m;}
+ public ContextMenu TrayMenu(){var m=new ContextMenu{Placement=PlacementMode.MousePoint};if(Program.Taskbar!=null)MI(m,Program.Taskbar.Hidden?"恢复系统任务栏  F12":"隐藏系统任务栏  F12",Program.Taskbar.Toggle);MI(m,(IsVisible?"收起收纳箱":"唤回收纳箱")+(SteamEdition.Enabled?"":"  F5"),TogglePanel);if(SteamEdition.Enabled&&Program.Components!=null)MI(m,Program.Components.ShortcutsPaused?"恢复全局快捷键":"暂停全局快捷键",Program.Components.ToggleShortcutPause);if(Dock!=null)MI(m,"控制中心",Dock.OpenControls);if(Program.Status!=null)m.Items.Add(Program.Status.VisibilityMenu());if(Program.Shots!=null)m.Items.Add(Program.Shots.VisibilityMenu());if(Program.Control!=null)m.Items.Add(Program.Control.VisibilityMenu());if(Dock!=null&&!SteamEdition.Enabled)m.Items.Add(Dock.Attention.Menu());if(!SteamEdition.Enabled)MI(m,"导入任务栏固定应用",ImportTaskbar);MI(m,"添加文件",()=>{Reveal();AddFiles();});MI(m,"退出",Quit);return m;}
  public void RefreshManagerHint(string shortcut){if(tray!=null)tray.Text=String.IsNullOrEmpty(shortcut)?"rushbin · 组件管理":"rushbin · "+shortcut+" 组件管理";}
- void InstallTray(){tray=new Forms.NotifyIcon{Icon=Drawing.Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName),Text="rushbin · F1 组件管理",Visible=true};tray.MouseUp+=(o,e)=>{if(e.Button==Forms.MouseButtons.Right)Dispatcher.Invoke(new Action(()=>{var m=TrayMenu();if(Program.Components!=null){var manager=new MenuItem{Header="组件管理"+(String.IsNullOrEmpty(Program.Components.Options.ManagerShortcut)?"":"  "+Program.Components.Options.ManagerShortcut)};manager.Click+=(a,b)=>Program.Components.ToggleManager();m.Items.Insert(0,manager);}m.IsOpen=true;}));};tray.DoubleClick+=(o,e)=>Dispatcher.Invoke(new Action(TogglePanel));if(!hotkey)Toast("F5 已被占用，仍可双击托盘图标切换显示");}
+ void InstallTray(){tray=new Forms.NotifyIcon{Icon=Drawing.Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName),Text=SteamEdition.Enabled?"Rushbin · 组件管理":"rushbin · F1 组件管理",Visible=true};tray.MouseUp+=(o,e)=>{if(e.Button==Forms.MouseButtons.Right)Dispatcher.Invoke(new Action(()=>{var m=TrayMenu();if(Program.Components!=null){var manager=new MenuItem{Header="组件管理"+(String.IsNullOrEmpty(Program.Components.Options.ManagerShortcut)?"":"  "+Program.Components.Options.ManagerShortcut)};manager.Click+=(a,b)=>Program.Components.ToggleManager();m.Items.Insert(0,manager);}m.IsOpen=true;}));};tray.DoubleClick+=(o,e)=>Dispatcher.Invoke(new Action(TogglePanel));if(!SteamEdition.Enabled&&!hotkey)Toast("F5 已被占用，仍可双击托盘图标切换显示");}
  void ApplyFrost(){GlassAccepted=Native.PanelFrost(this);if(!Program.Testing)File.WriteAllText(System.IO.Path.Combine(S.Root,"panel-material-state.json"),new JavaScriptSerializer().Serialize(Native.PanelMaterialInfo(this)),Encoding.UTF8);}
- public void Reveal(){if(!IsVisible)glass.Prepare();Show();WindowState=WindowState.Normal;Native.DesktopWidget(this);ApplyFrost();ApplyLayout();Activate();}
+ public void Reveal(){if(!IsVisible)glass.Prepare();Show();if(desktopRenderPending)Render();WindowState=WindowState.Normal;Native.DesktopWidget(this);ApplyFrost();ApplyLayout();Activate();}
  IntPtr Hook(IntPtr h,int msg,IntPtr w,IntPtr l,ref bool handled){if(msg==0x312||(uint)msg==Native.ShowMessage){try{File.AppendAllText(System.IO.Path.Combine(S.Root,"window-messages.log"),DateTimeOffset.Now.ToString("o")+" message="+msg+" visible="+IsVisible+Environment.NewLine);}catch{}}if(msg==0x83||msg==0x85){handled=true;return IntPtr.Zero;}if(msg==0x86){handled=true;return Native.ActivateWithoutFramePaint(h,w);}if((uint)msg==Native.ShowMessage){Reveal();handled=true;}if(msg==0x312&&w.ToInt32()==1){TogglePanel();handled=true;}if(msg==0x84){long point=l.ToInt64();int hit=ResizeHit(PointFromScreen(new Point(unchecked((short)(point&0xffff)),unchecked((short)((point>>16)&0xffff)))));if(hit!=0){handled=true;return new IntPtr(hit);}}if(msg==0x232)Dispatcher.BeginInvoke(new Action(SaveWindowBounds),DispatcherPriority.Loaded);if(msg==0x7e)Dispatcher.BeginInvoke(new Action(ApplyLayout));if(msg==5||msg==0x2e0)Dispatcher.BeginInvoke(new Action(()=>Native.ClipGlass(this,22)),DispatcherPriority.Loaded);return IntPtr.Zero;}
  void Toast(string text){status.Text=text;status.ToolTip=text;}
  public void Quit(){closing=true;if(Program.Files!=null)Program.Files.Shutdown();if(Program.Taskbar!=null){Program.Taskbar.Dispose();Program.Taskbar=null;}if(Program.Components!=null){Program.Components.Save();Program.Components.Dispose();Program.Components=null;}if(Program.Shots!=null)Program.Shots.Shutdown();if(Program.Status!=null)Program.Status.PrepareExit();if(Program.Control!=null)Program.Control.PrepareExit();ControlBluetooth.CloseSessions();Save();Close();Application.Current.Shutdown();}
@@ -736,14 +1028,14 @@ public sealed class DockAttention:IDisposable {
  void RemoveWindow(IntPtr window){stopped.Remove(window);bool changed=false;foreach(string id in PendingApps.Where(pair=>pair.Value.Window==window).Select(pair=>pair.Key).ToArray()){PendingApps.Remove(id);changed=true;}if(changed)dock.WakeAttention();Record();}
  public void Poll(){if(disposed)return;string foreground=Executable(Native.GetForegroundWindow());bool changed=false;foreach(var pair in PendingApps.ToArray()){var pending=pair.Value;if(!IsWindow(pending.Window)||String.Equals(foreground,pending.Executable,StringComparison.OrdinalIgnoreCase)){if(IsWindow(pending.Window))Stop(pending.Window);PendingApps.Remove(pair.Key);changed=true;}}if(changed)dock.WakeAttention();if(changed||Program.PanelCheck)Record();}
  public void Acknowledge(string id){Pending pending;if(PendingApps.TryGetValue(id,out pending)){if(IsWindow(pending.Window))Stop(pending.Window);PendingApps.Remove(id);dock.WakeAttention();Record();}}
- public bool TryOpen(string id){Pending pending;if(!PendingApps.TryGetValue(id,out pending)||!IsWindow(pending.Window))return false;bool focused=CodexActivation.Focus(pending.Window);try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"dock-attention-activation.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),id,target=pending.Window.ToInt64(),foreground=Native.GetForegroundWindow().ToInt64(),focused,action="reuse-attention-window-no-launch"}),Encoding.UTF8);}catch{}if(focused)Acknowledge(id);return true;}
+ public bool TryOpen(string id){Pending pending;if(!PendingApps.TryGetValue(id,out pending)||!IsWindow(pending.Window))return false;bool focused;if(CodexActivation.OfficialExecutable(pending.Executable))CodexActivation.TryReuse(pending.Executable,out focused);else focused=CodexActivation.Focus(pending.Window);try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"dock-attention-activation.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),id,target=pending.Window.ToInt64(),foreground=Native.GetForegroundWindow().ToInt64(),focused,action="reuse-attention-window-no-launch"}),Encoding.UTF8);}catch{}if(focused)Acknowledge(id);return true;}
  public static double Bounce(double seconds){double phase=seconds%3.2;if(phase<0||phase>=1.1)return 0;return -13*Math.Abs(Math.Sin(Math.PI*phase/.55))*Math.Exp(-phase*.65);}
  public double Offset(string id){Pending pending;return Enabled&&PendingApps.TryGetValue(id,out pending)?Bounce((Stopwatch.GetTimestamp()-pending.Started)/(double)Stopwatch.Frequency):0;}
  public void Toggle(){Enabled=!Enabled;PendingApps.Clear();if(!Program.Testing&&!Program.ResizeCheck){if(Enabled&&Registered)TaskbarAlerts.Apply();else TaskbarAlerts.Restore();}File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"dock-attention-options.json"),new JavaScriptSerializer().Serialize(new{enabled=Enabled}),Encoding.UTF8);dock.WakeAttention();Record();}
  public MenuItem Menu(){var item=new MenuItem{Header="底栏图标跳动提醒（关闭可恢复任务栏提醒）",IsCheckable=true,IsChecked=Enabled};item.Click+=(o,e)=>Toggle();return item;}
  public object Info(){return new{time=DateTimeOffset.Now.ToString("o"),enabled=Enabled,registered=Registered,shellMessage,flashEvents=FlashEvents,matchedEvents=MatchedEvents,stopRequests=StopRequests,targets=targets.Select(p=>new{id=p.Key,executable=p.Value}).ToArray(),pending=PendingApps.Values.Select(p=>new{id=p.Id,handle=p.Window.ToInt64(),executable=p.Executable,offset=Offset(p.Id)}).ToArray(),visuals=Program.PanelCheck?dock.AttentionVisuals():null,scope="Shell HSHELL_FLASH; executable identity only; no message content; foreground or click clears"};}
  void Record(){if(disposed)return;try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"dock-attention-state.json"),new JavaScriptSerializer().Serialize(Info()),Encoding.UTF8);}catch{}}
- public void Dispose(){disposed=true;if(poll!=null)poll.Stop();if(Registered)DeregisterShellHookWindow(handle);if(source!=null)source.RemoveHook(Hook);PendingApps.Clear();if(!Program.Testing&&!Program.ResizeCheck&&!Program.StatusCheck&&!Program.UiCheck)TaskbarAlerts.Restore();}
+ public void Dispose(){disposed=true;if(poll!=null)poll.Stop();if(Registered)DeregisterShellHookWindow(handle);if(source!=null)source.RemoveHook(Hook);PendingApps.Clear();if(!SteamEdition.Enabled&&!Program.Testing&&!Program.ResizeCheck&&!Program.StatusCheck&&!Program.UiCheck)TaskbarAlerts.Restore();}
 }
 public static class TaskbarAlerts {
  const string Key=@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";static readonly string[] Names={"TaskbarFlashing","TaskbarBadges"};
@@ -762,8 +1054,9 @@ public sealed class RunningApps {
  [DllImport("user32.dll")]static extern bool ShowWindowAsync(IntPtr window,int command);
  [DllImport("user32.dll")]static extern bool SetForegroundWindow(IntPtr window);
  static readonly HashSet<IntPtr> focusPending=new HashSet<IntPtr>();
+ [DllImport("user32.dll")]static extern bool IsHungAppWindow(IntPtr window);
  static bool Current(AppWindow window){if(window==null||!IsWindow(window.Handle))return false;uint id;GetWindowThreadProcessId(window.Handle,out id);return window.ProcessId>0?id==(uint)window.ProcessId:String.Equals(DockAttention.Executable(window.Handle),window.Executable,StringComparison.OrdinalIgnoreCase);}
- static bool FocusFast(AppWindow window){if(!Current(window))return false;if(IsIconic(window.Handle))ShowWindowAsync(window.Handle,9);if(Native.GetForegroundWindow()==window.Handle||SetForegroundWindow(window.Handle))return true;lock(focusPending){if(!focusPending.Add(window.Handle))return true;}bool queued=ThreadPool.QueueUserWorkItem(o=>{try{if(Current(window))CodexActivation.Focus(window.Handle);}finally{lock(focusPending)focusPending.Remove(window.Handle);}});if(!queued)lock(focusPending)focusPending.Remove(window.Handle);return queued;}
+ static bool FocusFast(AppWindow window){if(!Current(window))return false;if(IsIconic(window.Handle))ShowWindowAsync(window.Handle,9);else if(!IsWindowVisible(window.Handle))ShowWindowAsync(window.Handle,5);if(Native.GetForegroundWindow()==window.Handle||SetForegroundWindow(window.Handle))return true;lock(focusPending){if(!focusPending.Add(window.Handle))return true;}bool queued=ThreadPool.QueueUserWorkItem(o=>{try{if(Current(window))CodexActivation.Focus(window.Handle);}finally{lock(focusPending)focusPending.Remove(window.Handle);}});if(!queued)lock(focusPending)focusPending.Remove(window.Handle);return queued;}
  delegate bool Callback(IntPtr h,IntPtr state);
  [DllImport("user32.dll")]static extern bool EnumWindows(Callback callback,IntPtr state);
  [DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr h);
@@ -781,14 +1074,222 @@ public sealed class RunningApps {
  public bool Scan(){var found=new List<AppWindow>();var executables=new Dictionary<uint,string>();int current=Process.GetCurrentProcess().Id;EnumWindows((h,state)=>{try{uint id;GetWindowThreadProcessId(h,out id);if(id==current||!IsWindowVisible(h))return true;long style=IntPtr.Size==8?GetLong64(h,-20).ToInt64():GetLong32(h,-20);int cloaked;DwmGetWindowAttribute(h,14,out cloaked,4);var title=new StringBuilder(1024);var cls=new StringBuilder(128);GetWindowText(h,title,title.Capacity);GetClassName(h,cls,cls.Capacity);if(!Eligible(true,style,GetWindow(h,4)!=IntPtr.Zero,cloaked,cls.ToString(),title.Length>0,false))return true;string exe;if(!executables.TryGetValue(id,out exe))executables[id]=exe=DockAttention.Executable(h);if(exe==""||String.Equals(System.IO.Path.GetFileName(exe),"SearchHost.exe",StringComparison.OrdinalIgnoreCase)||String.Equals(System.IO.Path.GetFileName(exe),"StartMenuExperienceHost.exe",StringComparison.OrdinalIgnoreCase))return true;found.Add(new AppWindow{Handle=h,Executable=exe,Title=title.ToString(),ProcessId=(int)id,Minimized=IsIconic(h)});}catch{}return true;},IntPtr.Zero);return Update(found);}
  public bool Update(List<AppWindow> found){string before=Signature(Windows);Windows=found;foreach(string exe in found.Select(w=>w.Executable).Distinct(StringComparer.OrdinalIgnoreCase))if(!order.Contains(exe,StringComparer.OrdinalIgnoreCase))order.Add(exe);order.RemoveAll(exe=>!found.Any(w=>String.Equals(w.Executable,exe,StringComparison.OrdinalIgnoreCase)));return before!=Signature(found);}
  static string Signature(IEnumerable<AppWindow> windows){return String.Join("|",windows.Select(w=>w.Handle.ToInt64()+":"+w.Executable+":"+w.Minimized).OrderBy(s=>s));}
- public static bool Matches(Item item,AppWindow window){if(CodexActivation.IsEntry(item.Path))return CodexActivation.OfficialExecutable(window.Executable);return DockAttention.Matches(DockAttention.Target(item.Path),window.Executable);}
+ static readonly string WindowsExplorer=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"explorer.exe");
+ public static bool Matches(Item item,AppWindow window){
+  if(String.IsNullOrEmpty(window.Executable))return false;
+  if(CodexActivation.IsEntry(item.Path))return CodexActivation.OfficialExecutable(window.Executable);
+  var target=DockAttention.Target(item.Path);
+  if(DockAttention.Matches(target,window.Executable))return true;
+  if(MatchesLauncherWindow(target,window.Executable))return true;
+  var launcher=WeGameLauncher(window.Executable);
+  if(launcher!=null&&String.Equals(target,launcher,StringComparison.OrdinalIgnoreCase))return true;
+  const string controlCenterApp="CCU.WinUI_wrbgcf7aesyd8!App";
+  if(window.Executable.StartsWith(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+    "WindowsApps","CCU.WinUI_"),StringComparison.OrdinalIgnoreCase)
+    &&window.Executable.EndsWith(@"\CCUWinUI.exe",StringComparison.OrdinalIgnoreCase)
+    &&(String.Equals(Native.ShortcutAppId(item.Path),controlCenterApp,StringComparison.OrdinalIgnoreCase)
+     ||Native.LinkIdentity(item.Path).Split('|')[0].EndsWith(controlCenterApp,StringComparison.OrdinalIgnoreCase)))return true;
+  // The Windows taskbar's Explorer shortcut can have a Shell target with no executable path.
+  return String.Equals(window.Executable,WindowsExplorer,StringComparison.OrdinalIgnoreCase)
+   &&String.Equals(Native.ShortcutAppId(item.Path),"Microsoft.Windows.Explorer",StringComparison.OrdinalIgnoreCase);
+ }
+ internal static bool MatchesLauncherWindow(string launcher,string executable){
+  if(String.IsNullOrEmpty(launcher)||String.IsNullOrEmpty(executable))return false;
+  string folder=System.IO.Path.GetDirectoryName(launcher);
+  if(String.Equals(System.IO.Path.GetFileName(launcher),"lghub_system_tray.exe",StringComparison.OrdinalIgnoreCase)&&
+   String.Equals(System.IO.Path.GetFileName(folder),"system_tray",StringComparison.OrdinalIgnoreCase)){
+   return String.Equals(executable,System.IO.Path.Combine(System.IO.Path.GetDirectoryName(folder),"lghub.exe"),StringComparison.OrdinalIgnoreCase);
+  }
+  if(String.IsNullOrEmpty(folder)||!executable.StartsWith(folder.TrimEnd('\\')+"\\",StringComparison.OrdinalIgnoreCase))return false;
+  string current=System.IO.Path.GetFileName(executable);
+  switch(System.IO.Path.GetFileName(launcher).ToLowerInvariant()){
+   case "dingtalklauncher.exe":return String.Equals(current,"DingTalk.exe",StringComparison.OrdinalIgnoreCase);
+   case "ksolaunch.exe":return new[]{"wps.exe","et.exe","wpp.exe","wpspdf.exe"}.Contains(current,StringComparer.OrdinalIgnoreCase);
+   case "nutstore.exe":return String.Equals(current,"NutstoreClient.exe",StringComparison.OrdinalIgnoreCase);
+   case "leigod_launcher.exe":return String.Equals(executable,System.IO.Path.Combine(folder,"leigod.exe"),StringComparison.OrdinalIgnoreCase);
+   case "steam.exe":return String.Equals(executable,System.IO.Path.Combine(folder,@"bin\cef\cef.win64\steamwebhelper.exe"),StringComparison.OrdinalIgnoreCase);
+   case "jianyingpro.exe":
+   case "docker desktop.exe":return String.Equals(current,System.IO.Path.GetFileName(launcher),StringComparison.OrdinalIgnoreCase);
+   default:return false;
+  }
+ }
  public List<AppWindow> For(Item item){return Windows.Where(w=>Matches(item,w)).ToList();}
  public List<Item> Extra(IEnumerable<Item> pinned){var pins=pinned.ToArray();return order.Where(exe=>!Windows.Where(w=>String.Equals(w.Executable,exe,StringComparison.OrdinalIgnoreCase)).Any(w=>pins.Any(i=>Matches(i,w)))).Select(exe=>new Item{Id="running:"+exe.ToUpperInvariant(),Path=exe,Name=Name(exe)}).ToList();}
  public static string Name(string exe){try{string name=FileVersionInfo.GetVersionInfo(exe).FileDescription;if(!String.IsNullOrWhiteSpace(name))return name;}catch{}return System.IO.Path.GetFileNameWithoutExtension(exe);}
- public static bool Focus(AppWindow window){return window!=null&&IsWindow(window.Handle)&&String.Equals(DockAttention.Executable(window.Handle),window.Executable,StringComparison.OrdinalIgnoreCase)&&CodexActivation.Focus(window.Handle);}
- public static bool RequestClose(AppWindow window){return window!=null&&IsWindow(window.Handle)&&String.Equals(DockAttention.Executable(window.Handle),window.Executable,StringComparison.OrdinalIgnoreCase)&&Native.PostMessage(window.Handle,0x10,IntPtr.Zero,IntPtr.Zero);}
+ internal static bool IsAvailable(AppWindow window){return Current(window)&&IsWindowVisible(window.Handle);}
+ internal static bool TryRestoreHiddenClash(string shortcut){
+  var window=FindClashWindow(DockAttention.Target(shortcut),true);
+  return window!=null&&FocusAndVerify(window);
+ }
+ internal static AppWindow FindClashWindow(string executable,bool hiddenOnly=false){
+  if(!String.Equals(System.IO.Path.GetFileName(executable),"clash-verge.exe",StringComparison.OrdinalIgnoreCase))return null;
+  AppWindow match=null;
+  EnumWindows((handle,state)=>{
+   bool visible=IsWindowVisible(handle);
+   if((hiddenOnly&&visible)||GetWindow(handle,4)!=IntPtr.Zero)return true;
+   var title=new StringBuilder(64);var name=new StringBuilder(64);
+   GetWindowText(handle,title,title.Capacity);GetClassName(handle,name,name.Capacity);
+   if(title.ToString()!="Clash Verge"||name.ToString()!="Tauri Window")return true;
+   if(!String.Equals(DockAttention.Executable(handle),executable,StringComparison.OrdinalIgnoreCase))return true;
+   int cloaked;
+   if(DwmGetWindowAttribute(handle,14,out cloaked,4)!=0||cloaked!=0||IsHungAppWindow(handle))return true;
+   uint process;
+   GetWindowThreadProcessId(handle,out process);
+   if(process==0)return true;
+   var window=new AppWindow{Handle=handle,Executable=executable,Title=title.ToString(),ProcessId=(int)process,Minimized=IsIconic(handle)};
+   if(match==null||visible)match=window;
+   return !hiddenOnly&&!visible;
+  },IntPtr.Zero);
+  return match;
+ }
+ internal static bool IsUnresponsive(AppWindow window){return IsAvailable(window)&&IsHungAppWindow(window.Handle);}
+ internal static bool IsPresented(AppWindow window){return IsAvailable(window)&&!IsIconic(window.Handle);}
+ static string WeGameLauncher(string executable){
+  if(!String.Equals(System.IO.Path.GetFileName(executable),"browser.exe",StringComparison.OrdinalIgnoreCase))return null;
+  string folder=System.IO.Path.GetDirectoryName(executable);
+  if(!String.Equals(System.IO.Path.GetFileName(folder),"qbblinktrial",StringComparison.OrdinalIgnoreCase))return null;
+  string root=System.IO.Path.GetDirectoryName(folder);
+  if(!String.Equals(System.IO.Path.GetFileName(root),"WeGame",StringComparison.OrdinalIgnoreCase))return null;
+  string launcher=System.IO.Path.Combine(root,"wegame.exe");
+  return File.Exists(launcher)?launcher:null;
+ }
+ public static bool Focus(AppWindow window){
+  if(!Current(window)||IsUnresponsive(window))return false;
+  if(IsTaskManager(window.Executable))return OpenTaskManager(new[]{window});
+  return WeGameLauncher(window.Executable)!=null?FocusAndVerify(window):CodexActivation.Focus(window.Handle);
+ }
+ public static bool RequestClose(AppWindow window){return Current(window)&&!IsUnresponsive(window)&&Native.PostMessage(window.Handle,0x10,IntPtr.Zero,IntPtr.Zero);}
+ static readonly string TaskManagerPath=System.IO.Path.Combine(Environment.SystemDirectory,"Taskmgr.exe");
+ static DispatcherTimer taskManagerRestore;
+ internal static bool IsTaskManager(string executable){return String.Equals(executable,TaskManagerPath,StringComparison.OrdinalIgnoreCase);}
+ internal static bool ToggleTaskManager(IEnumerable<AppWindow> windows){
+  var candidates=windows.Where(window=>IsTaskManager(window.Executable)&&Current(window)).ToArray();
+  var active=ForegroundWindow(candidates);
+  if(active==null)return OpenTaskManager(candidates);
+  if(taskManagerRestore!=null)taskManagerRestore.Stop();
+  bool requested=RequestMinimize(active.Handle);
+  RecordTaskManager(requested?"minimize-existing-request":"minimize-existing-unavailable",active,IsAvailable(active)&&!IsIconic(active.Handle));
+  return requested;
+ }
+ internal static bool OpenTaskManager(IEnumerable<AppWindow> windows){
+  if(taskManagerRestore!=null)taskManagerRestore.Stop();
+  var target=windows.FirstOrDefault(window=>IsTaskManager(window.Executable)&&Current(window));
+  if(target==null)return LaunchTaskManager();
+  var previous=Native.GetForegroundWindow();
+  FocusFast(target);
+  var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(95)};
+  taskManagerRestore=timer;
+  int attempts=0;
+  timer.Tick+=(sender,e)=>{
+   var foreground=Native.GetForegroundWindow();
+   if(Current(target)&&foreground==target.Handle&&IsWindowVisible(target.Handle)&&!IsIconic(target.Handle)){
+    timer.Stop();RecordTaskManager("restored-existing",target,true);return;
+   }
+   if(foreground!=previous&&foreground!=target.Handle&&foreground!=IntPtr.Zero){
+    timer.Stop();RecordTaskManager("foreground-changed",target,false);return;
+   }
+   if(++attempts>=4||!Current(target)){
+    timer.Stop();LaunchTaskManager();return;
+   }
+   FocusFast(target);
+  };
+  timer.Start();return true;
+ }
+ static bool LaunchTaskManager(){
+  try{
+   using(var process=Process.Start(new ProcessStartInfo(TaskManagerPath){UseShellExecute=true,WindowStyle=ProcessWindowStyle.Normal})){
+    RecordTaskManager("windows-launcher",null,false);return true;
+   }
+  }catch(System.ComponentModel.Win32Exception ex){RecordTaskManager("windows-launcher-error-"+ex.NativeErrorCode,null,false);return false;}
+ }
+ static void RecordTaskManager(string action,AppWindow target,bool visible){
+  DeferredDiagnostics.Write(System.IO.Path.Combine(Program.S.Root,"task-manager-activation.json"),
+   new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),action,visible,
+    target=target==null?0:target.Handle.ToInt64(),foreground=Native.GetForegroundWindow().ToInt64()}));
+ }
  public static bool FocusBest(IEnumerable<AppWindow> windows){var list=windows.ToArray();if(list.Length==0)return false;var foreground=Native.GetForegroundWindow();return Focus(list.FirstOrDefault(w=>w.Handle==foreground)??list.FirstOrDefault(w=>!IsIconic(w.Handle))??list[0]);}
- public static bool ToggleBest(IEnumerable<AppWindow> windows,out string action){action="no-live-window";var list=windows.Where(Current).ToArray();if(list.Length==0)return false;var foreground=Native.GetForegroundWindow();var owners=new HashSet<IntPtr>();for(int depth=0;foreground!=IntPtr.Zero&&depth<32&&owners.Add(foreground);depth++)foreground=GetWindow(foreground,4);var active=list.FirstOrDefault(w=>owners.Contains(w.Handle)&&!IsIconic(w.Handle));if(active!=null){action="minimize-existing-request";return ShowWindowAsync(active.Handle,6)||Native.PostMessage(active.Handle,0x112,new IntPtr(0xF020),IntPtr.Zero);}action="focus-existing-no-launch";return FocusFast(list.FirstOrDefault(w=>!IsIconic(w.Handle))??list[0]);}
+ static AppWindow ForegroundWindow(IEnumerable<AppWindow> windows){
+  var foreground=Native.GetForegroundWindow();
+  var owners=new HashSet<IntPtr>();
+  for(int depth=0;foreground!=IntPtr.Zero&&depth<32&&owners.Add(foreground);depth++)foreground=GetWindow(foreground,4);
+  return windows.FirstOrDefault(window=>owners.Contains(window.Handle)&&!IsIconic(window.Handle));
+ }
+ internal static bool RequestMinimize(IntPtr handle){
+  return ShowWindowAsync(handle,6)||Native.PostMessage(handle,0x112,new IntPtr(0xF020),IntPtr.Zero);
+ }
+ static DispatcherTimer focusCheck;
+ static DispatcherTimer minimizeCheck;
+ [DllImport("user32.dll")]static extern bool CloseWindow(IntPtr window);
+ static void CancelWindowRequest(){
+  if(focusCheck!=null)focusCheck.Stop();
+  if(minimizeCheck!=null)minimizeCheck.Stop();
+ }
+ internal static bool MinimizeAndVerify(AppWindow target){
+  if(minimizeCheck!=null)minimizeCheck.Stop();
+  bool requested=RequestMinimize(target.Handle);
+  var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(120)};
+  minimizeCheck=timer;
+  int checks=0;
+  timer.Tick+=(sender,e)=>{
+   if(!IsAvailable(target)||IsIconic(target.Handle)){timer.Stop();return;}
+   if(++checks>=4){timer.Stop();return;}
+   // A queued show request may be ignored by a window which processes its own system command.
+   if(checks==1)Native.PostMessage(target.Handle,0x112,new IntPtr(0xF020),IntPtr.Zero);
+   // Win32 CloseWindow minimizes the target without destroying it.
+   if(checks==2)ThreadPool.QueueUserWorkItem(o=>{if(IsPresented(target))CloseWindow(target.Handle);});
+  };
+  timer.Start();return requested;
+ }
+ internal static bool FocusAndVerify(AppWindow target){
+  if(focusCheck!=null)focusCheck.Stop();
+  var previous=Native.GetForegroundWindow();
+  bool requested=FocusFast(target);
+  var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(110)};
+  focusCheck=timer;
+  int attempts=0;
+  bool fallback=false;
+  timer.Tick+=(sender,e)=>{
+   var foreground=Native.GetForegroundWindow();
+   bool opened=IsPresented(target)&&foreground==target.Handle;
+   if(opened||!Current(target)||foreground!=previous&&foreground!=target.Handle&&foreground!=IntPtr.Zero){
+    timer.Stop();RecordFocusResult(target,opened,fallback);return;
+   }
+   attempts++;
+   if(attempts<4){
+    if(attempts==2&&IsIconic(target.Handle))Native.PostMessage(target.Handle,0x112,new IntPtr(0xF120),IntPtr.Zero);
+    FocusFast(target);return;
+   }
+   if(attempts==4){
+    var launcher=WeGameLauncher(target.Executable);
+    if(launcher!=null&&Program.S.Data.Items.Any(entry=>String.Equals(DockAttention.Target(entry.Path),launcher,StringComparison.OrdinalIgnoreCase))){
+     fallback=ThreadPool.QueueUserWorkItem(o=>{
+      if(!Current(target))return;
+      try{using(var process=Process.Start(new ProcessStartInfo(launcher){UseShellExecute=true,
+       WorkingDirectory=System.IO.Path.GetDirectoryName(launcher)})){}}
+      catch(System.ComponentModel.Win32Exception){}
+     });
+     if(fallback)return;
+    }
+   }
+   if(!fallback||attempts>=100){timer.Stop();RecordFocusResult(target,false,fallback);}
+  };
+  timer.Start();return requested;
+ }
+ static void RecordFocusResult(AppWindow target,bool opened,bool fallback){
+  DeferredDiagnostics.Write(System.IO.Path.Combine(Program.S.Root,"running-window-result.json"),
+   new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),handle=target.Handle.ToInt64(),
+    processId=target.ProcessId,opened,fallback,visible=IsAvailable(target),minimized=IsIconic(target.Handle),
+    foreground=Native.GetForegroundWindow().ToInt64()}));
+ }
+ public static bool ToggleBest(IEnumerable<AppWindow> windows,out string action){
+  CancelWindowRequest();
+  action="no-live-window";var list=windows.Where(IsAvailable).ToArray();if(list.Length==0)return false;
+  list=list.Where(window=>!IsUnresponsive(window)).ToArray();
+  if(list.Length==0){action="window-not-responding";return false;}
+  var active=ForegroundWindow(list);
+  if(active!=null){action="minimize-existing-request";return MinimizeAndVerify(active);}
+  action="focus-existing-no-launch";return FocusAndVerify(list.FirstOrDefault(w=>!IsIconic(w.Handle))??list[0]);
+ }
 }
 // Native DWM relationships render the real window; no screenshots are cached.
 public sealed class WindowPreview:Window {
@@ -796,7 +1297,7 @@ public sealed class WindowPreview:Window {
  [DllImport("dwmapi.dll")]static extern int DwmExtendFrameIntoClientArea(IntPtr h,ref Margins margins);
  [DllImport("dwmapi.dll")]static extern int DwmSetWindowAttribute(IntPtr h,int attribute,ref int value,int size);
  Border glassFrame;bool frosted;int glassResult;
- public void SetGlass(bool hover){frosted=hover;var h=new WindowInteropHelper(this).Handle;if(h==IntPtr.Zero)return;var source=HwndSource.FromHwnd(h);source.CompositionTarget.BackgroundColor=Colors.Transparent;var margins=new Margins{Left=-1,Right=-1,Top=-1,Bottom=-1};glassResult=DwmExtendFrameIntoClientArea(h,ref margins);int dark=1;DwmSetWindowAttribute(h,20,ref dark,4);if(hover)Native.ActivateWithoutFramePaint(h,new IntPtr(1));int material=hover?3:1;int result=DwmSetWindowAttribute(h,38,ref material,4);if(result!=0)glassResult=result;glassFrame.Background=new SolidColorBrush(hover?Color.FromArgb(26,20,32,45):Color.FromArgb(12,225,242,255));glassFrame.BorderBrush=new SolidColorBrush(Color.FromArgb(hover?(byte)75:(byte)145,235,246,255));Record();}
+ public void SetGlass(bool hover){frosted=hover;var h=new WindowInteropHelper(this).Handle;if(h==IntPtr.Zero)return;var source=HwndSource.FromHwnd(h);source.CompositionTarget.BackgroundColor=Colors.Transparent;var margins=new Margins{Left=-1,Right=-1,Top=-1,Bottom=-1};glassResult=DwmExtendFrameIntoClientArea(h,ref margins);int dark=1;DwmSetWindowAttribute(h,20,ref dark,4);if(hover)Native.ActivateWithoutFramePaint(h,new IntPtr(1));int material=hover?3:1;int result=DwmSetWindowAttribute(h,38,ref material,4);if(result!=0)glassResult=result;glassFrame.Background=new SolidColorBrush(hover?Color.FromArgb(18,20,32,45):Color.FromArgb(8,225,242,255));glassFrame.BorderBrush=new SolidColorBrush(Color.FromArgb(hover?(byte)48:(byte)88,235,246,255));Record();}
  [StructLayout(LayoutKind.Sequential)]struct RectI {public int Left,Top,Right,Bottom;}
  [StructLayout(LayoutKind.Sequential)]struct SizeI {public int Width,Height;}
  [StructLayout(LayoutKind.Sequential)]struct Props {public uint Flags;public RectI Destination,Source;public byte Opacity;[MarshalAs(UnmanagedType.Bool)]public bool Visible;[MarshalAs(UnmanagedType.Bool)]public bool ClientOnly;}
@@ -805,50 +1306,242 @@ public sealed class WindowPreview:Window {
  [DllImport("dwmapi.dll")]static extern int DwmUpdateThumbnailProperties(IntPtr thumb,ref Props props);
  [DllImport("dwmapi.dll")]static extern int DwmQueryThumbnailSourceSize(IntPtr thumb,out SizeI size);
  sealed class Slot {public AppWindow Window;public Border Surface;public IntPtr Thumbnail;public int Result;}
- readonly DockBar dock;readonly StackPanel row=new StackPanel{Orientation=Orientation.Horizontal};readonly List<Slot> slots=new List<Slot>();List<AppWindow> windows=new List<AppWindow>();Button anchor;int page;bool finished;IntPtr initialForeground;public int RegisteredCount{get{return slots.Count(s=>s.Thumbnail!=IntPtr.Zero&&s.Result==0);}}
- public WindowPreview(DockBar owner){dock=owner;Title="rushbin 窗口预览";WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.NoResize;ShowInTaskbar=Program.RunningProbe;ShowActivated=false;Topmost=true;Background=Brushes.Transparent;Foreground=Brushes.White;FontFamily=new FontFamily("Microsoft YaHei UI");SizeToContent=SizeToContent.WidthAndHeight;glassFrame=new Border{Padding=new Thickness(8),CornerRadius=new CornerRadius(12),BorderThickness=new Thickness(1),Child=row};Content=glassFrame;SourceInitialized+=(o,e)=>{var src=HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);Native.PreviewStyle(this);SetGlass(false);src.AddHook((IntPtr h,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x21){handled=true;return new IntPtr(3);}if(msg==0x83||msg==0x85){handled=true;return IntPtr.Zero;}if(msg==0x86){handled=true;return Native.ActivateWithoutFramePaint(h,wp);}return IntPtr.Zero;});};MouseEnter+=(o,e)=>{dock.CancelPreviewClose();EnsureTop();SetGlass(true);};MouseLeave+=(o,e)=>{SetGlass(false);dock.SchedulePreviewClose();};IsVisibleChanged+=(o,e)=>{if(!IsVisible){Release();Record();}};Closed+=(o,e)=>{finished=true;Release();};PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Escape)Hide();};}
- int Capacity(){return Math.Max(1,Math.Min(4,(int)(SystemParameters.WorkArea.Width/232)-1));}
+ readonly DockBar dock;readonly StackPanel row=new StackPanel{Orientation=Orientation.Horizontal};readonly List<Slot> slots=new List<Slot>();List<AppWindow> windows=new List<AppWindow>();Button anchor;int page;bool finished;IntPtr initialForeground;
+ readonly DispatcherTimer peekDelay=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(140)};
+ readonly DispatcherTimer previewMonitor=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(160)};
+ Slot hovered;
+ HwndSource peekWindow;
+ IntPtr peekThumbnail;
+ DateTime keepAfterClose;
+ Drawing.Point closePointer;
+ internal string AnchorId{get{return anchor==null?null:anchor.Tag as string;}}
+ internal bool CloseInProgress{get{return DateTime.UtcNow<keepAfterClose;}}
+ public int RegisteredCount{get{return slots.Count(s=>s.Thumbnail!=IntPtr.Zero&&s.Result==0);}}
+ public WindowPreview(DockBar owner){dock=owner;Title="rushbin 窗口预览";WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.NoResize;ShowInTaskbar=Program.RunningProbe;ShowActivated=false;Topmost=true;Background=Brushes.Transparent;Foreground=Brushes.White;FontFamily=new FontFamily("Microsoft YaHei UI");SizeToContent=SizeToContent.WidthAndHeight;glassFrame=new Border{Padding=new Thickness(4,3,4,3),CornerRadius=new CornerRadius(10),BorderThickness=new Thickness(.5),Child=row};Content=glassFrame;SourceInitialized+=(o,e)=>{var src=HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);Native.PreviewStyle(this);SetGlass(false);src.AddHook((IntPtr h,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x21){handled=true;return new IntPtr(3);}if(msg==0x83||msg==0x85){handled=true;return IntPtr.Zero;}if(msg==0x86){handled=true;return Native.ActivateWithoutFramePaint(h,wp);}return IntPtr.Zero;});};MouseEnter+=(o,e)=>{dock.CancelPreviewClose();EnsureTop();SetGlass(true);};MouseLeave+=(o,e)=>{ResetPeek();SetGlass(false);dock.SchedulePreviewClose();};
+  peekDelay.Tick+=(o,e)=>{peekDelay.Stop();if(hovered!=null&&IsVisible)ShowPeek(hovered);};
+  previewMonitor.Tick+=(o,e)=>RefreshSources(windows);
+  SizeChanged+=(o,e)=>Dispatcher.BeginInvoke(new Action(()=>{if(IsVisible)Position();}),DispatcherPriority.Loaded);
+  IsVisibleChanged+=(o,e)=>{if(IsVisible)previewMonitor.Start();else{previewMonitor.Stop();ResetPeek();Release();Record();}};
+  Closed+=(o,e)=>{finished=true;ResetPeek();Release();if(peekWindow!=null){peekWindow.Dispose();peekWindow=null;}};
+  PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Escape)Hide();};}
+ Drawing.Rectangle AnchorWorkArea(){
+  var pixel=anchor.PointToScreen(new Point(anchor.ActualWidth/2,0));
+  return Forms.Screen.FromPoint(new Drawing.Point((int)pixel.X,(int)pixel.Y)).WorkingArea;
+ }
+ int Capacity(){
+  var source=PresentationSource.FromVisual(anchor);
+  double scale=source==null?1:source.CompositionTarget.TransformToDevice.M11;
+  double width=AnchorWorkArea().Width/scale-18;
+  int count=Math.Max(1,Math.Min(4,(int)(width/230)));
+  return windows.Count>count?Math.Max(1,Math.Min(count,(int)((width-56)/230))):count;
+ }
  void Release(){foreach(var slot in slots)if(slot.Thumbnail!=IntPtr.Zero){DwmUnregisterThumbnail(slot.Thumbnail);slot.Thumbnail=IntPtr.Zero;}}
- public void ShowFor(Button button,List<AppWindow> sources){if(finished||sources.Count==0)return;initialForeground=Native.GetForegroundWindow();anchor=button;windows=sources.ToList();page=0;Build();Show();Native.DesktopWidget(this);SetGlass(false);UpdateLayout();Position();EnsureTop();Attach();}
+ public void ShowFor(Button button,List<AppWindow> sources){
+  if(finished||sources.Count==0)return;
+  if(IsVisible&&AnchorId!=null&&Object.Equals(button.Tag,AnchorId)){Rebind(button,sources);return;}
+  initialForeground=Native.GetForegroundWindow();keepAfterClose=DateTime.MinValue;
+  anchor=button;windows=sources.Where(RunningApps.IsAvailable).ToList();page=0;
+  if(windows.Count==0){Hide();return;}
+  Build();Show();Native.DesktopWidget(this);SetGlass(false);UpdateLayout();Position();EnsureTop();Attach();
+ }
+ internal void Rebind(Button button,List<AppWindow> sources){
+  if(!IsVisible)return;
+  anchor=button;
+  if(!RefreshSources(sources))Position();
+ }
+ bool RefreshSources(IEnumerable<AppWindow> sources){
+  var live=sources.Where(RunningApps.IsAvailable).ToList();
+  if(live.Count==0){Hide();return true;}
+  if(windows.Select(w=>Tuple.Create(w.Handle,w.Title,w.Minimized)).SequenceEqual(
+     live.Select(w=>Tuple.Create(w.Handle,w.Title,w.Minimized))))return false;
+  windows=live;page=Math.Min(page,(windows.Count-1)/Capacity());
+  Rebuild();return true;
+ }
+ void Rebuild(){Build();UpdateLayout();Position();Attach();}
  public void EnsureTop(){if(!IsVisible)return;Native.SetWindowPos(new WindowInteropHelper(this).Handle,new IntPtr(-1),0,0,0,0,0x213);}
- public void CheckForeground(){if(!IsVisible)return;IntPtr current=Native.GetForegroundWindow();if(current!=initialForeground&&current!=new WindowInteropHelper(this).Handle&&current!=new WindowInteropHelper(dock).Handle){Hide();return;}if(IsMouseOver||(anchor!=null&&anchor.IsMouseOver))EnsureTop();}
+ public void CheckForeground(){
+  if(!IsVisible)return;
+  IntPtr current=Native.GetForegroundWindow();
+  if(current!=initialForeground&&current!=new WindowInteropHelper(this).Handle&&current!=new WindowInteropHelper(dock).Handle){
+   if(!CloseInProgress){Hide();return;}initialForeground=current;
+  }
+  if(IsMouseOver||(anchor!=null&&anchor.IsMouseOver))EnsureTop();
+ }
+ void ResetPeek(){
+  hovered=null;peekDelay.Stop();
+  if(peekThumbnail!=IntPtr.Zero){DwmUnregisterThumbnail(peekThumbnail);peekThumbnail=IntPtr.Zero;}
+  if(peekWindow!=null)Native.SetWindowPos(peekWindow.Handle,IntPtr.Zero,0,0,0,0,0x97);
+ }
+ void SchedulePeek(Slot slot){
+  if(hovered==slot||(CloseInProgress&&Forms.Cursor.Position==closePointer))return;
+  ResetPeek();hovered=slot;peekDelay.Start();
+ }
+ void ShowPeek(Slot slot){
+  if(!RunningApps.IsAvailable(slot.Window))return;
+  if(peekWindow==null){
+   var parameters=new HwndSourceParameters("rushbin 窗口页面预览"){
+    WindowStyle=unchecked((int)0x80000000),ExtendedWindowStyle=0x080000A0,Width=1,Height=1
+   };
+   peekWindow=new HwndSource(parameters);
+   peekWindow.AddHook((IntPtr h,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{
+    if(msg==0x84){handled=true;return new IntPtr(-1);}
+    return IntPtr.Zero;
+   });
+   peekWindow.RootVisual=new Border{Background=new SolidColorBrush(Color.FromRgb(29,35,42))};
+   Native.SuppressWindowChrome(peekWindow.Handle);
+  }
+  if(DwmRegisterThumbnail(peekWindow.Handle,slot.Window.Handle,out peekThumbnail)!=0)return;
+  SizeI source;
+  if(DwmQueryThumbnailSourceSize(peekThumbnail,out source)!=0||source.Width<=0||source.Height<=0){ResetPeek();return;}
+  var strip=new WindowInteropHelper(this).Handle;var region=Native.WindowPixelBounds(strip);var area=AnchorWorkArea();
+  int maxWidth=Math.Max(1,area.Width-40),maxHeight=Math.Max(1,region.Top-area.Top-28);
+  if(maxHeight<160)maxHeight=Math.Max(1,area.Height-40);
+  double scale=Math.Min(Math.Min((double)maxWidth/source.Width,(double)maxHeight/source.Height),
+   Math.Max(1.0,Math.Min(1.7,420.0/source.Width)));
+  int width=Math.Max(1,(int)(source.Width*scale)),height=Math.Max(1,(int)(source.Height*scale));
+  int left=area.Left+(area.Width-width)/2;
+  int top=Math.Max(area.Top+12,area.Top+(region.Top-area.Top-height)/2);
+  Native.SetWindowPos(peekWindow.Handle,strip,left,top,width,height,0x250);
+  var props=new Props{Flags=1|4|8|16,Destination=new RectI{Right=width,Bottom=height},Opacity=255,Visible=true};
+  if(DwmUpdateThumbnailProperties(peekThumbnail,ref props)!=0){ResetPeek();return;}
+  Record();
+ }
  public static DockClickButton PlainButton(object content,bool close=false){var button=new DockClickButton{Content=content,Padding=new Thickness(5),Margin=new Thickness(2),Background=Brushes.Transparent,BorderThickness=new Thickness(0),Foreground=Brushes.White,Cursor=Cursors.Hand,FocusVisualStyle=null};var border=new FrameworkElementFactory(typeof(Border));if(close){border.SetValue(Border.CornerRadiusProperty,new CornerRadius(6));border.SetBinding(Border.BackgroundProperty,new System.Windows.Data.Binding("Background"){RelativeSource=new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)});button.MouseEnter+=(o,e)=>button.Background=new SolidColorBrush(Color.FromRgb(232,17,35));button.MouseLeave+=(o,e)=>button.Background=Brushes.Transparent;}else border.SetValue(Border.BackgroundProperty,Brushes.Transparent);var presenter=new FrameworkElementFactory(typeof(ContentPresenter));presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty,HorizontalAlignment.Center);presenter.SetValue(ContentPresenter.VerticalAlignmentProperty,VerticalAlignment.Center);presenter.SetBinding(ContentPresenter.MarginProperty,new System.Windows.Data.Binding("Padding"){RelativeSource=new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)});border.AppendChild(presenter);button.Template=new ControlTemplate(typeof(Button)){VisualTree=border};return button;}
  void Build(){
-  Release();slots.Clear();row.Children.Clear();int capacity=Capacity();
-  if(windows.Count>capacity){var prev=PlainButton("‹");prev.Width=24;prev.Margin=new Thickness(0,0,4,0);prev.Click+=(o,e)=>{page=(page-1+(windows.Count+capacity-1)/capacity)%((windows.Count+capacity-1)/capacity);Build();UpdateLayout();Position();Attach();};row.Children.Add(prev);}
+  ResetPeek();Release();slots.Clear();row.Children.Clear();int capacity=Capacity();
+  if(windows.Count>capacity){var prev=PlainButton("‹");prev.Width=24;prev.Margin=new Thickness(0,0,4,0);prev.Click+=(o,e)=>{page=(page-1+(windows.Count+capacity-1)/capacity)%((windows.Count+capacity-1)/capacity);Rebuild();};row.Children.Add(prev);}
   foreach(var window in windows.Skip(page*capacity).Take(capacity)){
-   var slot=new Slot{Window=window};var content=new StackPanel{Width=216};var header=new Grid{Height=24,Margin=new Thickness(4,0,0,6)};header.ColumnDefinitions.Add(new ColumnDefinition());header.ColumnDefinitions.Add(new ColumnDefinition{Width=GridLength.Auto});header.Children.Add(new TextBlock{Text=window.Title,TextTrimming=TextTrimming.CharacterEllipsis,VerticalAlignment=VerticalAlignment.Center,FontSize=11,Foreground=Brushes.White});var close=PlainButton("×",true);close.Tag="preview-close";close.Width=32;close.Height=24;close.FontSize=17;close.Padding=new Thickness(0);close.Margin=new Thickness(4,0,0,0);close.ToolTip=null;ToolTipService.SetIsEnabled(close,false);System.Windows.Automation.AutomationProperties.SetName(close,"关闭窗口 "+window.Title);Grid.SetColumn(close,1);header.Children.Add(close);content.Children.Add(header);
-   close.Click+=(o,e)=>{e.Handled=true;bool requested=RunningApps.RequestClose(slot.Window);try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"preview-close-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),handle=slot.Window.Handle.ToInt64(),requested,message="WM_CLOSE",handled=e.Handled,scope="Normal close request only; application may cancel or prompt; no process termination"}),Encoding.UTF8);}catch{}Hide();};
-   slot.Surface=new Border{Width=216,Height=132,Background=Brushes.Transparent,Child=new TextBlock{Text=window.Minimized?"已最小化 · 点击恢复窗口":"窗口预览暂不可用 · 点击打开",TextAlignment=TextAlignment.Center,VerticalAlignment=VerticalAlignment.Center,FontSize=11,Foreground=Brushes.LightGray}};content.Children.Add(slot.Surface);var button=PlainButton(content);button.Tag="preview-card";button.Click+=(o,e)=>{if(RunningApps.Focus(slot.Window))dock.Attention.Poll();Hide();};row.Children.Add(button);slots.Add(slot);
+   var slot=new Slot{Window=window};var content=new StackPanel{Width=216};var header=new Grid{Height=22,Margin=new Thickness(1,0,0,2)};header.ColumnDefinitions.Add(new ColumnDefinition());header.ColumnDefinitions.Add(new ColumnDefinition{Width=GridLength.Auto});header.Children.Add(new TextBlock{Text=RunningApps.IsUnresponsive(window)?"未响应 · "+window.Title:window.Title,TextTrimming=TextTrimming.CharacterEllipsis,VerticalAlignment=VerticalAlignment.Center,FontSize=11,Foreground=Brushes.White});var close=PlainButton("×",true);close.Tag="preview-close";close.Width=27;close.Height=22;close.FontSize=17;close.Padding=new Thickness(0);close.Margin=new Thickness(4,0,0,0);close.ToolTip=null;ToolTipService.SetIsEnabled(close,false);System.Windows.Automation.AutomationProperties.SetName(close,"关闭窗口 "+window.Title);Grid.SetColumn(close,1);header.Children.Add(close);content.Children.Add(header);
+   close.MouseEnter+=(o,e)=>ResetPeek();
+   close.Click+=(o,e)=>{
+    e.Handled=true;ResetPeek();
+    if(RunningApps.IsUnresponsive(slot.Window)){dock.ShowUnresponsive(close);return;}
+    bool requested=RunningApps.RequestClose(slot.Window);
+    if(requested){closePointer=Forms.Cursor.Position;keepAfterClose=DateTime.UtcNow.AddMilliseconds(1400);dock.SchedulePreviewClose();}
+    DeferredDiagnostics.Write(System.IO.Path.Combine(Program.S.Root,"preview-close-state.json"),
+     new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),handle=slot.Window.Handle.ToInt64(),
+      requested,message="WM_CLOSE",remainingVisible=IsVisible}));
+   };
+   slot.Surface=new Border{Width=216,Height=132,Background=Brushes.Transparent,
+    Child=new TextBlock{Text=window.Minimized?"已最小化 · 点击恢复窗口":"窗口预览暂不可用 · 点击打开",
+     TextAlignment=TextAlignment.Center,VerticalAlignment=VerticalAlignment.Center,FontSize=11,Foreground=Brushes.LightGray}};
+   var button=PlainButton(slot.Surface);button.Tag="preview-card";
+   button.Margin=new Thickness(0);button.Padding=new Thickness(0);
+   button.MouseEnter+=(o,e)=>SchedulePeek(slot);
+   button.MouseMove+=(o,e)=>SchedulePeek(slot);
+   button.MouseLeave+=(o,e)=>{if(hovered==slot)ResetPeek();};
+   button.Click+=(o,e)=>{
+    ResetPeek();
+    if(RunningApps.IsUnresponsive(slot.Window)){dock.ShowUnresponsive(button);return;}
+    if(RunningApps.Focus(slot.Window))dock.Attention.Poll();
+    Hide();
+   };
+   content.Children.Add(button);content.Margin=new Thickness(3,2,3,2);
+   row.Children.Add(content);slots.Add(slot);
   }
-  if(windows.Count>capacity){var next=PlainButton("›");next.Width=24;next.Margin=new Thickness(4,0,0,0);next.Click+=(o,e)=>{page=(page+1)%((windows.Count+capacity-1)/capacity);Build();UpdateLayout();Position();Attach();};row.Children.Add(next);}
+  if(windows.Count>capacity){var next=PlainButton("›");next.Width=24;next.Margin=new Thickness(4,0,0,0);next.Click+=(o,e)=>{page=(page+1)%((windows.Count+capacity-1)/capacity);Rebuild();};row.Children.Add(next);}
  }
- void Position(){if(anchor==null)return;var source=PresentationSource.FromVisual(dock);double scale=source.CompositionTarget.TransformToDevice.M11;var point=anchor.PointToScreen(new Point(anchor.ActualWidth/2,0));var screen=Forms.Screen.FromPoint(new Drawing.Point((int)point.X,(int)point.Y));var area=screen.WorkingArea;Left=Math.Max(area.Left/scale,Math.Min(point.X/scale-ActualWidth/2,area.Right/scale-ActualWidth));Top=Math.Max(area.Top/scale,point.Y/scale-ActualHeight-12);}
+ void Position(){
+  if(anchor==null||PresentationSource.FromVisual(anchor)==null)return;
+  var pixel=anchor.PointToScreen(new Point(anchor.ActualWidth/2,0));var area=AnchorWorkArea();
+  var h=new WindowInteropHelper(this).Handle;var bounds=Native.WindowPixelBounds(h);
+  var scale=PresentationSource.FromVisual(anchor).CompositionTarget.TransformToDevice;
+  int left=Math.Max(area.Left,Math.Min((int)Math.Round(pixel.X-bounds.Width/2.0),area.Right-bounds.Width));
+  int top=Math.Max(area.Top,(int)Math.Round(pixel.Y-bounds.Height-8*scale.M22));
+  if(left!=bounds.Left||top!=bounds.Top)Native.SetWindowPos(h,IntPtr.Zero,left,top,0,0,0x215);
+ }
  void Attach(){var h=new WindowInteropHelper(this).Handle;var src=PresentationSource.FromVisual(this);double scale=src.CompositionTarget.TransformToDevice.M11;foreach(var slot in slots){slot.Result=DwmRegisterThumbnail(h,slot.Window.Handle,out slot.Thumbnail);if(slot.Result!=0)continue;SizeI size;if(DwmQueryThumbnailSourceSize(slot.Thumbnail,out size)!=0||size.Width<=0||size.Height<=0){DwmUnregisterThumbnail(slot.Thumbnail);slot.Thumbnail=IntPtr.Zero;continue;}var point=slot.Surface.TranslatePoint(new Point(),this);double fit=Math.Min(slot.Surface.ActualWidth/size.Width,slot.Surface.ActualHeight/size.Height),width=size.Width*fit,height=size.Height*fit;double x=point.X+(slot.Surface.ActualWidth-width)/2,y=point.Y+(slot.Surface.ActualHeight-height)/2;var props=new Props{Flags=1|4|8|16,Destination=new RectI{Left=(int)(x*scale),Top=(int)(y*scale),Right=(int)((x+width)*scale),Bottom=(int)((y+height)*scale)},Opacity=255,Visible=true,ClientOnly=false};slot.Result=DwmUpdateThumbnailProperties(slot.Thumbnail,ref props);}Record();}
- public void ProbeSelect(){var first=row.Children.OfType<DockClickButton>().FirstOrDefault();if(first!=null)first.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));}
+ public void ProbeSelect(){var first=AppearanceProbe.Visuals<DockClickButton>(this).FirstOrDefault(b=>Object.Equals(b.Tag,"preview-card"));if(first!=null)first.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));}
+ internal void ProbePeek(){if(slots.Count>0){ResetPeek();hovered=slots[0];ShowPeek(hovered);}}
+ internal bool PeekVisible{get{return peekThumbnail!=IntPtr.Zero;}}
  public void ProbeClose(){var first=AppearanceProbe.Visuals<Button>(this).FirstOrDefault(b=>Object.Equals(b.Tag,"preview-close"));if(first!=null)first.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));}
- void Record(){try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"window-preview-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),visible=IsVisible,frosted,glassResult,total=windows.Count,page,registered=RegisteredCount,targets=slots.Select(s=>new{handle=s.Window.Handle.ToInt64(),thumbnail=s.Thumbnail.ToInt64(),result=s.Result,minimized=s.Window.Minimized}).ToArray(),scope="Native DWM live thumbnails; no screenshot file or chat content captured"}),Encoding.UTF8);}catch{}}
+ internal static async System.Threading.Tasks.Task VerifyInteractions(DockBar dock,Action<string,bool> check){
+  var anchor=AppearanceProbe.Visuals<Button>(dock).First(button=>button.IsVisible);
+  var fixtures=Enumerable.Range(1,3).Select(i=>new Window{Title="窗口预览验收 "+i,
+   Width=360,Height=230,ShowInTaskbar=false}).ToArray();
+  var strip=new WindowPreview(dock);
+  try{
+   foreach(var window in fixtures)window.Show();
+   using(var process=Process.GetCurrentProcess()){
+    var sources=fixtures.Select(window=>new AppWindow{Handle=new WindowInteropHelper(window).Handle,
+     Executable=process.MainModule.FileName,ProcessId=process.Id,Title=window.Title}).ToList();
+    strip.ShowFor(anchor,sources);var foreground=Native.GetForegroundWindow();
+    strip.ProbePeek();
+    check("悬停显示原生大预览且前台窗口不变",strip.PeekVisible&&Native.GetForegroundWindow()==foreground);
+    strip.ProbeClose();
+    await System.Threading.Tasks.Task.Delay(600);
+    strip.CheckForeground();
+    var bounds=Native.WindowPixelBounds(new WindowInteropHelper(strip).Handle);
+    var center=anchor.PointToScreen(new Point(anchor.ActualWidth/2,0));
+    var area=strip.AnchorWorkArea();
+    double expected=Math.Max(area.Left,Math.Min(center.X-bounds.Width/2.0,area.Right-bounds.Width));
+    File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"窗口预览居中核对.json"),
+     new JavaScriptSerializer().Serialize(new{closed=!fixtures[0].IsVisible,strip.IsVisible,strip.RegisteredCount,
+      strip.PeekVisible,actualLeft=bounds.Left,expected,leftOfArea=area.Left,bottom=bounds.Bottom,anchorY=center.Y}),Encoding.UTF8);
+    check("关闭一项后保留余下预览并在图标上方重新居中",!fixtures[0].IsVisible&&
+     strip.IsVisible&&strip.RegisteredCount==2&&!strip.PeekVisible&&Math.Abs(bounds.Left-expected)<=1&&bounds.Bottom<center.Y);
+    strip.ProbeClose();
+    await System.Threading.Tasks.Task.Delay(350);
+    check("可从保留的缩略图继续关闭第二个窗口",!fixtures[1].IsVisible&&fixtures[2].IsVisible&&strip.IsVisible&&strip.RegisteredCount==1);
+    var surface=strip.slots.Single().Surface;
+    check("预览框收窄留白且保留原缩略图尺寸",strip.ActualWidth<=232&&strip.ActualHeight<=168&&
+     surface.ActualWidth==216&&surface.ActualHeight==132&&strip.glassFrame.BorderThickness.Left==.5);
+    File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"缩略图框尺寸.json"),
+     new JavaScriptSerializer().Serialize(new{width=strip.ActualWidth,height=strip.ActualHeight,
+      thumbnailWidth=surface.ActualWidth,thumbnailHeight=surface.ActualHeight,unit="WPF DIP"}),Encoding.UTF8);
+    strip.ProbeSelect();
+    await System.Threading.Tasks.Task.Delay(150);
+    check("点击剩余预览才唤出窗口并关闭预览",!strip.IsVisible&&Native.GetForegroundWindow()==sources[2].Handle);
+   }
+  }finally{
+   strip.Close();
+   foreach(var window in fixtures.Where(window=>window.IsVisible))window.Close();
+  }
+ }
+ void Record(){try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"window-preview-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),visible=IsVisible,frosted,glassResult,total=windows.Count,page,registered=RegisteredCount,peekVisible=PeekVisible,
+   foreground=Native.GetForegroundWindow().ToInt64(),anchor=AnchorId,
+   bounds=Native.WindowPixelBounds(new WindowInteropHelper(this).Handle),targets=slots.Select(s=>new{handle=s.Window.Handle.ToInt64(),thumbnail=s.Thumbnail.ToInt64(),result=s.Result,minimized=s.Window.Minimized}).ToArray(),scope="Native DWM live thumbnails; no screenshot file or chat content captured"}),Encoding.UTF8);}catch{}}
 }
 public class DockBar:Window {
  GlassSurface glass;public void PrepareGlass(){glass.Prepare();}
  Box box;StackPanel row;Border frame;public bool GlassAccepted;Store S{get{return Program.S;}}
- class Node {public Button Button;public Image Image;public Item Item;public Border Dot,SortHint;public List<AppWindow> Windows;public ScaleTransform Scale=new ScaleTransform(1,1);public TranslateTransform Shift=new TranslateTransform();public double Center;}
- List<Node> nodes=new List<Node>();DispatcherTimer motion,appsTimer,previewOpen,previewClose;WindowPreview preview;ControlCenter controls;Node previewNode;bool dragging,pointerPressed;int offset;public readonly DockAttention Attention;public readonly RunningApps Apps=new RunningApps();public List<Item> DynamicItems=new List<Item>();int totalCount;
- public DockHold Hold;bool dockInitialized;bool WantHold{get{return Program.HoldCheck||(!Program.Testing&&!Program.UiCheck&&!Program.PanelCheck&&!Program.StatusCheck);}}public bool HoldShown{get{return Hold!=null&&Hold.Active&&Hold.Held;}}public bool HoldMode{get{return Hold!=null&&Hold.Active;}}public bool AttentionShown{get{return Attention!=null&&Attention.Enabled&&Attention.PendingApps.Count>0&&(Program.Components==null||Program.Components.Enabled("dock"));}}bool attentionRaised;
+ class Node {public Button Button;public Image Image;public Item Item;public Border Dot;public List<AppWindow> Windows;public ScaleTransform Scale=new ScaleTransform(1,1);public TranslateTransform Shift=new TranslateTransform();public double Center;}
+ readonly ToolTip unresponsiveHint=new ToolTip{Content="应用未响应，暂时无法打开或关闭。",Placement=PlacementMode.Top};
+ readonly DispatcherTimer unresponsiveTimer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(3000)};
+ List<Node> nodes=new List<Node>();DispatcherTimer motion,appsTimer,previewOpen,previewClose,launchWatch;WindowPreview preview;ControlCenter controls;Node previewNode;bool dragging,pointerPressed,dockRenderPending;readonly TileSortPreview dockSort;int offset;public readonly DockAttention Attention;public readonly RunningApps Apps=new RunningApps();public List<Item> DynamicItems=new List<Item>();int totalCount;
+ public DockHold Hold;bool dockInitialized;bool WantHold{get{return !SteamEdition.Enabled&&(Program.HoldCheck||(!Program.Testing&&!Program.UiCheck&&!Program.PanelCheck&&!Program.StatusCheck));}}public bool HoldShown{get{return Hold!=null&&Hold.Active&&Hold.Held;}}public bool HoldMode{get{return Hold!=null&&Hold.Active;}}public bool AttentionShown{get{return Attention!=null&&Attention.Enabled&&Attention.PendingApps.Count>0&&(Program.Components==null||Program.Components.Enabled("dock"));}}bool attentionRaised;
  public DockBar(Box panel){box=panel;ShowActivated=false;Opacity=1;Attention=new DockAttention(this);Title="rushbin 底部栏";WindowStyle=WindowStyle.None;AllowsTransparency=true;Background=Brushes.Transparent;ShowInTaskbar=Program.PanelCheck;ResizeMode=ResizeMode.NoResize;Height=118;
   frame=new Border{Margin=new Thickness(46,0,46,6),Height=64,VerticalAlignment=VerticalAlignment.Bottom,CornerRadius=new CornerRadius(25),BorderThickness=new Thickness(1),BorderBrush=RimBrush(),Padding=new Thickness(12,9,12,9)};
-  row=new StackPanel{Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center};frame.Child=row;Content=new Grid{Children={frame}};glass=new GlassSurface(this,frame);
+  row=new StackPanel{Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center};frame.Child=row;var layout=new Grid{Children={frame}};Content=layout;
+  dockSort=new TileSortPreview(row,layout,"dock-drag-image",button=>button.Tag as string);glass=new GlassSurface(this,frame);
   ComponentSizer.Attach(this,"dock",160,84);motion=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(16)};motion.Tick+=(o,e)=>Animate();MouseMove+=(o,e)=>{if(!pointerPressed)motion.Start();};MouseLeave+=(o,e)=>{if(!pointerPressed)motion.Start();};
   previewOpen=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(500)};previewOpen.Tick+=(o,e)=>{previewOpen.Stop();if(previewNode!=null&&previewNode.Button.IsMouseOver&&!dragging&&previewNode.Windows.Count>0){if(preview==null)preview=new WindowPreview(this);preview.ShowFor(previewNode.Button,previewNode.Windows);}};
-  previewClose=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(320)};previewClose.Tick+=(o,e)=>{previewClose.Stop();if(preview!=null&&!preview.IsMouseOver)preview.Hide();};
-  appsTimer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(800)};appsTimer.Tick+=(o,e)=>{if(preview!=null)preview.CheckForeground();if(dragging||Mouse.LeftButton==MouseButtonState.Pressed)return;if(Apps.Scan()){if(preview!=null)preview.Hide();Render();}RecordRunning();};
-  Closed+=(o,e)=>{if(Hold!=null)Hold.Dispose();motion.Stop();appsTimer.Stop();previewOpen.Stop();previewClose.Stop();if(preview!=null)preview.Close();if(controls!=null){controls.PrepareExit();controls.Close();}Attention.Dispose();};
+  previewClose=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(320)};previewClose.Tick+=(o,e)=>{previewClose.Stop();if(preview!=null&&!preview.IsMouseOver){
+   if(preview.CloseInProgress)previewClose.Start();else preview.Hide();
+  }};
+  unresponsiveTimer.Tick+=(o,e)=>CloseUnresponsiveHint();
+  appsTimer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(800)};appsTimer.Tick+=(o,e)=>{if(preview!=null)preview.CheckForeground();if(dragging||Mouse.LeftButton==MouseButtonState.Pressed)return;if(Apps.Scan())Render(true);RecordRunning();};
+  Closed+=(o,e)=>{CloseUnresponsiveHint();if(launchWatch!=null)launchWatch.Stop();if(Hold!=null)Hold.Dispose();motion.Stop();appsTimer.Stop();previewOpen.Stop();previewClose.Stop();if(preview!=null)preview.Close();if(controls!=null){controls.PrepareExit();controls.Close();}Attention.Dispose();};
   SourceInitialized+=(o,e)=>{var src=HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);GlassAccepted=Native.Glass(src.Handle);Native.DesktopWidget(this);if(WantHold)Hold=new DockHold(this);src.AddHook((IntPtr h,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x21&&(!Program.PanelCheck||Program.DockInputCheck)){handled=true;return new IntPtr(3);}if(msg==5||msg==0x2e0)Dispatcher.BeginInvoke(new Action(()=>Native.ClipGlass(this,25)),DispatcherPriority.Loaded);return IntPtr.Zero;});};
-  SizeChanged+=(o,e)=>{frame.Height=Math.Max(50,ActualHeight-54);Native.ClipGlass(this,25);};ContentRendered+=(o,e)=>Native.ClipGlass(this,25);Loaded+=(o,e)=>{if(!dockInitialized){dockInitialized=true;if(!Program.Testing&&!Program.UiCheck)Apps.Scan();Render();ApplyLayout();Attention.Start(HwndSource.FromHwnd(new WindowInteropHelper(this).Handle));if(!Program.Testing&&!Program.UiCheck)appsTimer.Start();if(Program.RunningProbe)DockProbe.Start(this);}if(HoldMode)ApplyHoldVisibility();Opacity=1;if(Hold!=null)Hold.Record("loaded");};AllowDrop=true;
-  DragOver+=(o,e)=>{e.Effects=e.Data.GetDataPresent("DeskBox.DockMove")?DragDropEffects.Move:e.Data.GetDataPresent("DeskBox.Item")||ShellDrop.CanRead(e.Data)?DragDropEffects.Link:DragDropEffects.None;e.Handled=true;};
-  Drop+=(o,e)=>{if(e.Data.GetDataPresent("DeskBox.DockMove")){var last=nodes.LastOrDefault();if(last!=null)ReorderDock((string)e.Data.GetData("DeskBox.DockMove"),last.Item.Id,true);e.Handled=true;}else if(e.Data.GetDataPresent("DeskBox.Item")){box.PinEntry((string)e.Data.GetData("DeskBox.Item"),true);e.Handled=true;}else if(ShellDrop.CanRead(e.Data)){box.PinPaths(ShellDrop.Read(e.Data));e.Handled=true;}};
+  SizeChanged+=(o,e)=>{frame.Height=Math.Max(50,ActualHeight-54);Native.ClipGlass(this,25);};ContentRendered+=(o,e)=>Native.ClipGlass(this,25);Loaded+=(o,e)=>{if(!dockInitialized){dockInitialized=true;Render();ApplyLayout();Dispatcher.BeginInvoke(new Action(()=>{if(!IsLoaded)return;if(!SteamEdition.Enabled)Attention.Start(HwndSource.FromHwnd(new WindowInteropHelper(this).Handle));if(!Program.Testing&&!Program.UiCheck){if(Apps.Scan())Render();appsTimer.Start();}}),DispatcherPriority.Background);if(Program.RunningProbe)DockProbe.Start(this);}if(HoldMode)ApplyHoldVisibility();Opacity=1;if(Hold!=null)Hold.Record("loaded");};AllowDrop=true;
+  DragOver+=(o,e)=>{
+   if(e.Data.GetDataPresent("DeskBox.DockMove")){
+    e.Effects=SteamEdition.Enabled?SteamEdition.ReferenceEffect(e.AllowedEffects):DragDropEffects.Move;
+    if(dragging&&e.Effects!=DragDropEffects.None)PreviewDockSort((string)e.Data.GetData("DeskBox.DockMove"),e.GetPosition(row));
+   }else e.Effects=e.Data.GetDataPresent("DeskBox.Item")||ShellDrop.CanRead(e.Data)?DragDropEffects.Link:DragDropEffects.None;
+   e.Handled=true;
+  };
+  PreviewDragLeave+=(o,e)=>{var point=e.GetPosition(this);if(point.X<0||point.Y<0||point.X>=ActualWidth||point.Y>=ActualHeight)dockSort.Reset();};
+  Drop+=(o,e)=>{if(e.Data.GetDataPresent("DeskBox.DockMove")){string id=e.Data.GetData("DeskBox.DockMove") as string;var point=e.GetPosition(row);
+   e.Effects=SteamEdition.Enabled?SteamEdition.ReferenceEffect(e.AllowedEffects):DragDropEffects.Move;
+   if(e.Effects!=DragDropEffects.None){
+    var buttons=PreviewDockSort(id,point);
+    if(buttons.Length>0){int slot=DockSlot(buttons,point.X);
+     bool after=slot==buttons.Length;ReorderDock(id,(string)buttons[Math.Min(slot,buttons.Length-1)].Tag,after);}
+   }
+   e.Handled=true;}else if(e.Data.GetDataPresent("DeskBox.Item")){box.PinEntry((string)e.Data.GetData("DeskBox.Item"),true);e.Handled=true;}else if(ShellDrop.CanRead(e.Data)){box.PinPaths(ShellDrop.Read(e.Data));e.Handled=true;}};
   PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Escape){box.MinimizePanel();e.Handled=true;}};
-  MouseWheel+=(o,e)=>{int max=MaxVisible();if(totalCount>max){offset=Math.Max(0,Math.Min(totalCount-max,offset+(e.Delta<0?1:-1)));Render();e.Handled=true;}};
+  MouseWheel+=(o,e)=>{if(dragging)return;int max=MaxVisible();if(totalCount>max){offset=Math.Max(0,Math.Min(totalCount-max,offset+(e.Delta<0?1:-1)));Render();e.Handled=true;}};
  }
  int MaxVisible(){var screens=Forms.Screen.AllScreens;var screen=screens[Math.Max(0,Math.Min(screens.Length-1,S.Data.Screen))];var src=PresentationSource.FromVisual(this);double scale=src==null?1:src.CompositionTarget.TransformToDevice.M11;return Math.Max(1,(int)((screen.WorkingArea.Width/scale-206)/44));}
  static Brush RimBrush(){var rim=new LinearGradientBrush{StartPoint=new Point(0,0),EndPoint=new Point(0,1)};rim.GradientStops.Add(new GradientStop(Color.FromArgb(215,255,255,255),0));rim.GradientStops.Add(new GradientStop(Color.FromArgb(120,239,247,255),.22));rim.GradientStops.Add(new GradientStop(Color.FromArgb(65,220,235,248),.55));rim.GradientStops.Add(new GradientStop(Color.FromArgb(55,220,235,248),.78));rim.GradientStops.Add(new GradientStop(Color.FromArgb(100,245,250,255),1));rim.Freeze();return rim;}
@@ -857,24 +1550,77 @@ public class DockBar:Window {
  public void ApplyHoldVisibility(){if(Program.Components!=null&&!Program.Components.Enabled("dock")){Hide();return;}if(HoldShown||AttentionShown){if(AttentionShown)attentionRaised=true;Show();WindowState=WindowState.Normal;ApplyLayout();Native.SetWindowPos(new WindowInteropHelper(this).Handle,new IntPtr(-1),0,0,0,0,0x253);motion.Start();}else{previewOpen.Stop();previewClose.Stop();previewNode=null;if(preview!=null)preview.Hide();foreach(var button in row.Children.OfType<Button>())if(button.ContextMenu!=null)button.ContextMenu.IsOpen=false;motion.Stop();Topmost=false;Show();WindowState=WindowState.Normal;ApplyLayout();Native.DesktopWidget(this);Native.AnchorDock(this);}}
  public void TogglePanel(){box.TogglePanel();Render();}
  Button Small(string text,Action a){var b=box.B(text,a);b.Width=40;b.Height=42;b.Padding=new Thickness(3);b.FontSize=23;b.Foreground=Brushes.White;b.MouseEnter+=(o,e)=>b.Background=Brushes.Transparent;return b;}
- public void Render(){
-  motion.Stop();previewOpen.Stop();if(preview!=null)preview.Hide();previewNode=null;nodes.Clear();row.Children.Clear();var launch=Small("",SystemStart.Open);launch.Tag="windows-start-menu";launch.ToolTip="Windows 开始菜单 · 右键打开 rushbin 面板 · 组件管理可从托盘打开";var launchMenu=new ContextMenu();var panelItem=new MenuItem{Header="打开 / 收起 rushbin 面板  F5"};panelItem.Click+=(o,e)=>TogglePanel();launchMenu.Items.Add(panelItem);launch.ContextMenu=launchMenu;
+ public void Render(){Render(false);}
+ void Render(bool preservePreview){
+  if(dragging){dockRenderPending=true;return;}
+  var keptPreview=preservePreview&&preview!=null&&preview.IsVisible?preview.AnchorId:null;
+  motion.Stop();previewOpen.Stop();if(keptPreview==null&&preview!=null)preview.Hide();previewNode=null;nodes.Clear();row.Children.Clear();var launch=Small("",SystemStart.Open);launch.Tag="windows-start-menu";launch.ToolTip="Windows 开始菜单 · 右键打开 rushbin 面板 · 组件管理可从托盘打开";var launchMenu=new ContextMenu();var panelItem=new MenuItem{Header="打开 / 收起 rushbin 面板  F5"};panelItem.Click+=(o,e)=>TogglePanel();launchMenu.Items.Add(panelItem);launch.ContextMenu=launchMenu;
   launch.Content=new Image{Source=SystemStart.Icon(),Width=28,Height=28};row.Children.Add(launch);
   var pinned=S.Data.DockPins.Select(id=>S.Data.Items.FirstOrDefault(x=>x.Id==id)).Where(x=>x!=null).ToList();DynamicItems=OrderedRunning(Apps.Extra(pinned));var combined=pinned.Concat(DynamicItems).ToList();totalCount=combined.Count;int max=MaxVisible();offset=Math.Max(0,Math.Min(offset,Math.Max(0,totalCount-max)));
   if(totalCount>0)row.Children.Add(Divider("launcher-divider"));bool runningDivider=false;
   foreach(var item in combined.Skip(offset).Take(max)){var it=item;bool transient=DynamicItems.Contains(item);if(transient&&pinned.Count>0&&!runningDivider){row.Children.Add(Divider("running-divider"));runningDivider=true;}var image=new Image{Source=Native.Icon(it.Path),Width=34,Height=34,RenderTransformOrigin=new Point(.5,1)};var node=new Node{Image=image,Item=it,Windows=Apps.For(it)};var transforms=new TransformGroup();transforms.Children.Add(node.Scale);transforms.Children.Add(node.Shift);image.RenderTransform=transforms;
-   var gesture=new EntryGesture();var b=Small("",()=>{if(!gesture.Click())return;motion.Stop();previewOpen.Stop();previewClose.Stop();if(Attention.PendingApps.ContainsKey(it.Id)){Attention.TryOpen(it.Id);if(preview!=null)preview.Hide();if(!pointerPressed)motion.Start();return;}if(node.Windows.Count>0){var dispatch=Stopwatch.StartNew();string action;bool accepted=RunningApps.ToggleBest(node.Windows,out action);dispatch.Stop();Dispatcher.BeginInvoke(new Action(()=>{if(accepted)Attention.Acknowledge(it.Id);if(preview!=null)preview.Hide();RecordActivation(node,accepted,action,dispatch.Elapsed.TotalMilliseconds);if(!pointerPressed)motion.Start();}),DispatcherPriority.Background);}else{if(!transient)box.Open(it);Dispatcher.BeginInvoke(new Action(()=>{if(preview!=null)preview.Hide();if(!pointerPressed)motion.Start();}),DispatcherPriority.Background);}});((DockClickButton)b).AcceptRapidClicks=true;b.Tag=it.Id;node.Button=b;var iconSlot=new Grid{Width=34,Height=34,ClipToBounds=false};iconSlot.Children.Add(image);node.Dot=new Border{Tag="running-dot",Width=4,Height=4,CornerRadius=new CornerRadius(2),Background=new SolidColorBrush(Color.FromRgb(155,158,163)),HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Bottom,Margin=new Thickness(0,0,0,-7),IsHitTestVisible=false,Visibility=node.Windows.Count>0?Visibility.Visible:Visibility.Collapsed};iconSlot.Children.Add(node.Dot);node.SortHint=new Border{Tag="dock-sort-hint",Width=2,Height=42,Background=new SolidColorBrush(Color.FromArgb(180,230,250,255)),Visibility=Visibility.Collapsed,IsHitTestVisible=false};iconSlot.Children.Add(node.SortHint);b.Content=iconSlot;b.ToolTip=it.Name;nodes.Add(node);row.Children.Add(b);b.MouseEnter+=(o,e)=>{previewNode=node;previewClose.Stop();previewOpen.Stop();if(node.Windows.Count>0){ToolTipService.SetIsEnabled(b,false);previewOpen.Start();}else{ToolTipService.SetIsEnabled(b,true);if(preview!=null)preview.Hide();}};b.MouseLeave+=(o,e)=>{previewOpen.Stop();SchedulePreviewClose();};
-   bool dragArmed=false;b.PreviewMouseLeftButtonDown+=(o,e)=>{pointerPressed=true;motion.Stop();previewOpen.Stop();previewClose.Stop();gesture.Press(e.GetPosition(b),1);dragArmed=true;};b.PreviewMouseLeftButtonUp+=(o,e)=>{pointerPressed=false;dragArmed=false;};b.LostMouseCapture+=(o,e)=>{pointerPressed=false;};b.PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Space||e.Key==Key.Enter)gesture.Press(new Point(),1);};b.AddHandler(UIElement.PreviewMouseMoveEvent,new MouseEventHandler((o,e)=>{if(e.LeftButton!=MouseButtonState.Pressed||!dragArmed||!gesture.Move(e.GetPosition(b)))return;dragArmed=false;e.Handled=true;b.ReleaseMouseCapture();var data=new DataObject();data.SetData("DeskBox.DockMove",it.Id);if(!transient){data.SetData("DeskBox.DockPin",it.Id);data.SetData("DeskBox.Item",it.Id);}if(EntryPath.IsShell(it.Path))data.SetData(ShellDrop.Format,new MemoryStream(ShellDrop.FromPaths(new[]{it.Path})));else data.SetData(DataFormats.FileDrop,new[]{it.Path});dragging=true;motion.Start();try{DragDrop.DoDragDrop(b,data,DragDropEffects.Move|DragDropEffects.Link);}finally{gesture.Cancel();dragging=false;foreach(var n in nodes)n.SortHint.Visibility=Visibility.Collapsed;motion.Start();}}),true);
-   b.AllowDrop=true;b.PreviewDragOver+=(o,e)=>{if(e.Data.GetDataPresent("DeskBox.DockMove")){e.Effects=DragDropEffects.Move;bool after=e.GetPosition(b).X>=b.ActualWidth/2;node.SortHint.HorizontalAlignment=after?HorizontalAlignment.Right:HorizontalAlignment.Left;node.SortHint.Margin=after?new Thickness(0,0,-6,0):new Thickness(-6,0,0,0);node.SortHint.Visibility=Visibility.Visible;e.Handled=true;}};b.DragLeave+=(o,e)=>node.SortHint.Visibility=Visibility.Collapsed;b.Drop+=(o,e)=>{node.SortHint.Visibility=Visibility.Collapsed;if(e.Data.GetDataPresent("DeskBox.DockMove")){bool after=e.GetPosition(b).X>=b.ActualWidth/2;ReorderDock((string)e.Data.GetData("DeskBox.DockMove"),it.Id,after);e.Handled=true;}};
+   var gesture=new EntryGesture();var b=Small("",()=>{if(!gesture.Click())return;if(launchWatch!=null)launchWatch.Stop();motion.Stop();previewOpen.Stop();previewClose.Stop();
+    CloseUnresponsiveHint();
+    node.Windows=Apps.For(it);
+    var live=node.Windows.Where(RunningApps.IsAvailable).ToArray();
+    if(live.Length>0&&live.All(RunningApps.IsUnresponsive)){
+     ShowUnresponsive(node.Button);
+     RecordActivation(node,false,"window-not-responding",0);
+     if(!pointerPressed)motion.Start();
+     return;
+    }
+    if(RunningApps.IsTaskManager(DockAttention.Target(it.Path))){
+     if(preview!=null)preview.Hide();RunningApps.ToggleTaskManager(node.Windows);if(!pointerPressed)motion.Start();return;
+    }
+    if(CodexActivation.IsEntry(it.Path)&&CodexActivation.Windows().Count==0){box.Open(it);if(preview!=null)preview.Hide();if(!pointerPressed)motion.Start();return;}if(node.Windows.Count>0||Attention.PendingApps.ContainsKey(it.Id))CodexFrostBridge.TryEnsure(it.Path);if(Attention.PendingApps.ContainsKey(it.Id)&&!node.Windows.Any(window=>window.Handle==Native.GetForegroundWindow()&&RunningApps.IsPresented(window))){Attention.TryOpen(it.Id);if(preview!=null)preview.Hide();if(!pointerPressed)motion.Start();return;}if(node.Windows.Any(RunningApps.IsAvailable)){var dispatch=Stopwatch.StartNew();string action;bool accepted=RunningApps.ToggleBest(node.Windows,out action);dispatch.Stop();Dispatcher.BeginInvoke(new Action(()=>{if(accepted)Attention.Acknowledge(it.Id);if(preview!=null)preview.Hide();RecordActivation(node,accepted,action,dispatch.Elapsed.TotalMilliseconds);if(!pointerPressed)motion.Start();}),DispatcherPriority.Background);}else{if(!transient)OpenPinned(it);Dispatcher.BeginInvoke(new Action(()=>{if(preview!=null)preview.Hide();if(!pointerPressed)motion.Start();}),DispatcherPriority.Background);}});((DockClickButton)b).AcceptRapidClicks=true;b.Tag=it.Id;node.Button=b;var iconSlot=new Grid{Width=34,Height=34,ClipToBounds=false};iconSlot.Children.Add(image);node.Dot=new Border{Tag="running-dot",Width=4,Height=4,CornerRadius=new CornerRadius(2),Background=new SolidColorBrush(Color.FromRgb(155,158,163)),HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Bottom,Margin=new Thickness(0,0,0,-7),IsHitTestVisible=false,Visibility=node.Windows.Count>0?Visibility.Visible:Visibility.Collapsed};iconSlot.Children.Add(node.Dot);b.Content=iconSlot;b.ToolTip=it.Name;nodes.Add(node);row.Children.Add(b);b.MouseEnter+=(o,e)=>{previewNode=node;previewClose.Stop();previewOpen.Stop();if(node.Windows.Count>0){ToolTipService.SetIsEnabled(b,false);previewOpen.Start();}else{ToolTipService.SetIsEnabled(b,true);if(preview!=null)preview.Hide();}};b.MouseLeave+=(o,e)=>{previewOpen.Stop();SchedulePreviewClose();};
+   bool dragArmed=false;b.PreviewMouseLeftButtonDown+=(o,e)=>{pointerPressed=true;motion.Stop();previewOpen.Stop();previewClose.Stop();gesture.Press(e.GetPosition(b),1);dragArmed=true;};b.PreviewMouseLeftButtonUp+=(o,e)=>{pointerPressed=false;dragArmed=false;};b.LostMouseCapture+=(o,e)=>{pointerPressed=false;};b.PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Space||e.Key==Key.Enter)gesture.Press(new Point(),1);};b.AddHandler(UIElement.PreviewMouseMoveEvent,new MouseEventHandler((o,e)=>{if(e.LeftButton!=MouseButtonState.Pressed||!dragArmed||!gesture.Move(e.GetPosition(b)))return;dragArmed=false;e.Handled=true;b.ReleaseMouseCapture();var data=new DataObject();data.SetData("DeskBox.DockMove",it.Id);if(!transient){data.SetData("DeskBox.DockPin",it.Id);data.SetData("DeskBox.Item",it.Id);}if(EntryPath.IsShell(it.Path))data.SetData(ShellDrop.Format,new MemoryStream(ShellDrop.FromPaths(new[]{it.Path})));else data.SetData(DataFormats.FileDrop,new[]{it.Path});DismissWindowPreview();dragging=true;motion.Start();
+    DragDropEffects result=DragDropEffects.None;
+    try{result=dockSort.Run(b,gesture.Grip,data,SteamEdition.Enabled?DragDropEffects.Link|DragDropEffects.Copy:DragDropEffects.Move|DragDropEffects.Link);}
+    finally{gesture.Cancel();dragging=false;
+     Action rebuild=dockRenderPending?(Action)Render:null;dockRenderPending=false;
+     dockSort.Finish(rebuild,result!=DragDropEffects.None);motion.Start();
+    }}),true);
    var menu=new ContextMenu();var remove=new MenuItem{Header=transient?"固定到此栏位":"从底栏移除（保留收纳箱入口）"};remove.Click+=(o,e)=>{if(transient)box.PinPaths(new[]{it.Path});else box.PinEntry(it.Id,false);};menu.Items.Add(remove);b.ContextMenu=menu;
   }
-  Attention.Refresh();UpdateAttentionDots();if(Attention.PendingApps.Count>0)motion.Start();frame.ToolTip=totalCount>max?"滚轮浏览更多应用；拖动图标排序":"拖动图标排序；右键可以固定或移除应用";ApplyLayout();Dispatcher.BeginInvoke(new Action(UpdateCenters),DispatcherPriority.Loaded);RecordRunning();
+  Attention.Refresh();UpdateAttentionDots();if(Attention.PendingApps.Count>0)motion.Start();frame.ToolTip=totalCount>max?"滚轮浏览更多应用；拖动图标排序":"拖动图标排序；右键可以固定或移除应用";ApplyLayout();
+  if(keptPreview!=null){
+   var kept=nodes.FirstOrDefault(node=>node.Item.Id==keptPreview);
+   if(kept==null)preview.Hide();else{row.UpdateLayout();preview.Rebind(kept.Button,kept.Windows);}
+  }
+  Dispatcher.BeginInvoke(new Action(UpdateCenters),DispatcherPriority.Loaded);RecordRunning();
+ }
+ static int DockSlot(Button[] buttons,double x){
+  int slot=0;
+  while(slot<buttons.Length){
+   var rect=TileSortPreview.Bounds(buttons[slot]);
+   if(x<rect.Left+rect.Width/2)break;
+   slot++;
+  }
+  return slot;
+ }
+ Button[] PreviewDockSort(string source,Point point){
+  if(!nodes.Any(node=>node.Item.Id==source))return new Button[0];
+  bool pinned=S.Data.DockPins.Contains(source);
+  var buttons=nodes.Where(node=>S.Data.DockPins.Contains(node.Item.Id)==pinned).Select(node=>node.Button).ToArray();
+  dockSort.Preview(buttons,DockSlot(buttons,point.X),point);
+  return buttons;
  }
  public List<Item> OrderedRunning(List<Item> items){var order=S.Data.DockRunningOrder??new List<string>();return items.OrderBy(item=>{int index=order.FindIndex(path=>String.Equals(path,item.Path,StringComparison.OrdinalIgnoreCase));return index<0?Int32.MaxValue:index;}).ToList();}
  public bool ReorderDock(string source,string target,bool after){bool pinned=S.Data.DockPins.Contains(source),targetPinned=S.Data.DockPins.Contains(target);if(pinned){if(!Store.MoveDockOrder(S.Data.DockPins,source,targetPinned?target:null,targetPinned?after:true))return false;}else{var from=DynamicItems.FirstOrDefault(item=>item.Id==source);var to=DynamicItems.FirstOrDefault(item=>item.Id==target);if(from==null)return false;var order=(S.Data.DockRunningOrder??new List<string>()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();foreach(var item in DynamicItems)if(!order.Contains(item.Path,StringComparer.OrdinalIgnoreCase))order.Add(item.Path);if(!Store.MoveDockOrder(order,from.Path,to==null?null:to.Path,to==null?false:after))return false;S.Data.DockRunningOrder=order;}S.Save();Render();return true;}
  Border Divider(string name){return new Border{Tag=name,Width=1,Height=28,Background=new SolidColorBrush(Color.FromArgb(50,255,255,255)),Margin=new Thickness(6,0,7,0)};}
  public void StartControlCard(){if(controls==null){controls=new ControlCenter(box,this);Program.Control=controls;}if(controls.VisiblePreference)controls.Reveal();}
  public void OpenControls(){if(controls==null){controls=new ControlCenter(box,this);Program.Control=controls;}controls.Toggle();}
+ internal void ShowUnresponsive(FrameworkElement anchor){
+  CloseUnresponsiveHint();
+  unresponsiveHint.PlacementTarget=anchor;
+  unresponsiveHint.IsOpen=true;
+  unresponsiveTimer.Start();
+ }
+ void CloseUnresponsiveHint(){
+  unresponsiveTimer.Stop();
+  unresponsiveHint.IsOpen=false;
+  unresponsiveHint.PlacementTarget=null;
+ }
  public void DismissWindowPreview(){previewOpen.Stop();previewClose.Stop();previewNode=null;if(preview!=null&&preview.IsVisible)preview.Hide();}
  public void CancelPreviewClose(){previewClose.Stop();}
  public void SchedulePreviewClose(){previewClose.Stop();previewClose.Start();}
@@ -882,9 +1628,67 @@ public class DockBar:Window {
  public void ProbeHide(){if(preview!=null)preview.Hide();}
  public void ProbeSelect(){if(preview!=null)preview.ProbeSelect();}
  public void ProbeClose(){if(preview!=null)preview.ProbeClose();}
+ internal void ProbeTaskManagerClick(){
+  var node=nodes.FirstOrDefault(item=>RunningApps.IsTaskManager(DockAttention.Target(item.Item.Path)));
+  if(node!=null)node.Button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+ }
+ internal void ProbeEntryClick(string id){
+  var node=nodes.FirstOrDefault(item=>item.Item.Id==id);
+  if(node==null){
+   int index=S.Data.DockPins.IndexOf(id);
+   if(index>=0){offset=index;Render();node=nodes.FirstOrDefault(item=>item.Item.Id==id);}
+  }
+  if(node==null)throw new InvalidOperationException("入口未显示："+id);
+  node.Button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+ }
+ internal void ProbeAuditState(string id){
+  var observed=new RunningApps();observed.Scan();
+  var item=S.Data.Items.FirstOrDefault(entry=>entry.Id==id);
+  var matching=item==null?new List<AppWindow>():observed.For(item);
+  var foreground=Native.GetForegroundWindow().ToInt64();
+  File.WriteAllText(System.IO.Path.Combine(S.Root,"entry-audit-state.json"),
+   new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),id,foreground,
+    matching=matching.Select(w=>new{handle=w.Handle.ToInt64(),w.Executable,w.ProcessId,w.Minimized}),
+    windows=observed.Windows.Select(w=>new{handle=w.Handle.ToInt64(),w.Executable,w.ProcessId,w.Minimized})}),Encoding.UTF8);
+ }
+ internal void ProbeAuditMinimize(long handle){
+  var observed=new RunningApps();observed.Scan();
+  var target=observed.Windows.FirstOrDefault(window=>window.Handle.ToInt64()==handle);
+  if(target==null||target.Handle!=Native.GetForegroundWindow())throw new InvalidOperationException("目标窗口已不在前台");
+  string action;
+  RunningApps.ToggleBest(new[]{target},out action);
+ }
+ internal void ProbeMatchedMinimize(string identifier,long handle){
+  var observed=new RunningApps();observed.Scan();
+  var item=S.Data.Items.FirstOrDefault(entry=>entry.Id==identifier);
+  var target=observed.Windows.FirstOrDefault(window=>window.Handle.ToInt64()==handle);
+  if(item==null||!RunningApps.IsAvailable(target)||!RunningApps.Matches(item,target))
+   throw new InvalidOperationException("验收窗口与所选入口不匹配");
+  RunningApps.MinimizeAndVerify(target);
+ }
  public void ProbeGlass(bool value,bool red=false){if(preview==null)return;preview.SetGlass(value);if(red){var close=AppearanceProbe.Visuals<Button>(preview).FirstOrDefault(b=>Object.Equals(b.Tag,"preview-close"));if(close!=null)close.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice,Environment.TickCount){RoutedEvent=Mouse.MouseEnterEvent});}}
  public void ProbeNeutral(){box.Reveal();CodexActivation.Focus(new WindowInteropHelper(box).Handle);}
- void RecordActivation(Node node,bool accepted,string action,double dispatchMs){bool focused=node.Windows.Any(w=>w.Handle==Native.GetForegroundWindow());try{DeferredDiagnostics.Write(System.IO.Path.Combine(S.Root,"running-window-activation.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),id=node.Item.Id,accepted,focused,dispatchMs,foreground=Native.GetForegroundWindow().ToInt64(),windows=node.Windows.Select(w=>w.Handle.ToInt64()).ToArray(),action}));}catch{}}
+ void OpenPinned(Item item){
+  var previous=Native.GetForegroundWindow();
+  box.Open(item);
+  if(CodexActivation.IsEntry(item.Path))return;
+  var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(240)};
+  launchWatch=timer;
+  int remaining=20;
+  timer.Tick+=(sender,e)=>{
+   var matches=Apps.For(item).Where(RunningApps.IsAvailable).ToArray();
+   var foreground=Native.GetForegroundWindow();
+   if(matches.Any(window=>window.Handle==foreground&&RunningApps.IsPresented(window))){
+    timer.Stop();return;
+   }
+   if(foreground!=previous&&foreground!=new WindowInteropHelper(this).Handle||--remaining==0){
+    timer.Stop();return;
+   }
+   if(matches.Length>0){timer.Stop();RunningApps.FocusAndVerify(matches[0]);}
+  };
+  timer.Start();
+ }
+ void RecordActivation(Node node,bool accepted,string action,double dispatchMs){bool focused=node.Windows.Any(window=>window.Handle==Native.GetForegroundWindow()&&RunningApps.IsPresented(window));try{DeferredDiagnostics.Write(System.IO.Path.Combine(S.Root,"running-window-activation.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),id=node.Item.Id,accepted,focused,dispatchMs,foreground=Native.GetForegroundWindow().ToInt64(),windows=node.Windows.Select(w=>w.Handle.ToInt64()).ToArray(),action}));}catch{}}
  public object RunningInfo(){return new{time=DateTimeOffset.Now.ToString("o"),windows=Apps.Windows.Select(w=>new{handle=w.Handle.ToInt64(),executable=w.Executable,minimized=w.Minimized}).ToArray(),transient=DynamicItems.Select(i=>new{i.Id,i.Path}).ToArray(),width=Width,autoWidth=true,capacity=MaxVisible(),displayed=nodes.Select(n=>new{id=n.Item.Id,windowCount=n.Windows.Count,dot=n.Dot.Visibility==Visibility.Visible}).ToArray(),dividers=row.Children.OfType<Border>().Select(b=>b.Tag).ToArray(),scope="Visible top-level task windows, excluding tool/owned/cloaked/system/own windows; no background-process-only indicator"};}
  void RecordRunning(){try{File.WriteAllText(System.IO.Path.Combine(S.Root,"running-apps-state.json"),new JavaScriptSerializer().Serialize(RunningInfo()),Encoding.UTF8);}catch{}}
  void UpdateCenters(){row.UpdateLayout();foreach(var node in nodes)node.Center=node.Button.TranslatePoint(new Point(node.Button.ActualWidth/2,0),row).X;}
@@ -908,7 +1712,7 @@ public class DockBar:Window {
 }
 
 public static class DockProbe {
- public static void Start(DockBar dock){var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(150)};timer.Tick+=(o,e)=>{string file=System.IO.Path.Combine(Program.S.Root,"preview-probe-command.txt");if(!File.Exists(file))return;try{string command=File.ReadAllText(file).Trim();File.Delete(file);if(command=="show")dock.ProbePreview();else if(command=="hide")dock.ProbeHide();else if(command=="select")dock.ProbeSelect();else if(command=="close")dock.ProbeClose();else if(command=="clear")dock.ProbeGlass(false);else if(command=="frost")dock.ProbeGlass(true);else if(command=="red")dock.ProbeGlass(true,true);else if(command=="neutral")dock.ProbeNeutral();}catch(Exception ex){File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"preview-probe-error.txt"),ex.ToString());}};timer.Start();dock.Closed+=(o,e)=>timer.Stop();}
+ public static void Start(DockBar dock){var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(150)};timer.Tick+=(o,e)=>{string file=System.IO.Path.Combine(Program.S.Root,"preview-probe-command.txt");if(!File.Exists(file))return;try{string command=File.ReadAllText(file).Trim();File.Delete(file);if(command=="show")dock.ProbePreview();else if(command=="hide")dock.ProbeHide();else if(command=="select")dock.ProbeSelect();else if(command=="close")dock.ProbeClose();else if(command=="clear")dock.ProbeGlass(false);else if(command=="frost")dock.ProbeGlass(true);else if(command=="red")dock.ProbeGlass(true,true);else if(command=="neutral")dock.ProbeNeutral();else if(command=="task-manager-click")dock.ProbeTaskManagerClick();else if(command.StartsWith("entry-click:",StringComparison.Ordinal))dock.ProbeEntryClick(command.Substring(12));else if(command.StartsWith("audit-state:",StringComparison.Ordinal))dock.ProbeAuditState(command.Substring(12));else if(command.StartsWith("audit-minimize:",StringComparison.Ordinal))dock.ProbeAuditMinimize(Int64.Parse(command.Substring(15)));else if(command.StartsWith("matched-min:",StringComparison.Ordinal)){var args=command.Substring(12).Split('|');dock.ProbeMatchedMinimize(args[0],Int64.Parse(args[1]));}}catch(Exception ex){File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"preview-probe-error.txt"),ex.ToString());}};timer.Start();dock.Closed+=(o,e)=>timer.Stop();}
 }
 public static class ControlAudio {
  [StructLayout(LayoutKind.Sequential)]struct KsProperty {public Guid Set;public uint Id,Flags;}
@@ -930,16 +1734,12 @@ public static class ControlAudio {
  [ComImport,Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]class Enumerator {}
  [ComImport,Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]interface IEnum {void EnumAudioEndpoints(int flow,uint state,out ICollection collection);void GetDefaultAudioEndpoint(int flow,int role,out IDevice device);void GetDevice([MarshalAs(UnmanagedType.LPWStr)]string id,out IDevice device);}
  [ComImport,Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]interface ICollection {void GetCount(out uint count);void Item(uint index,out IDevice device);}
- [ComImport,Guid("D666063F-1587-4E43-81F1-B948E807363F"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]interface IDevice {void Activate(ref Guid iid,uint context,IntPtr parameter,[MarshalAs(UnmanagedType.IUnknown)]out object value);void OpenPropertyStore(int access,out IProperties properties);void GetId([MarshalAs(UnmanagedType.LPWStr)]out string id);void GetState(out uint state);}
- [StructLayout(LayoutKind.Sequential)]struct Key {public Guid Format;public int Id;}
- [StructLayout(LayoutKind.Explicit,Size=24)]struct Variant {[FieldOffset(0)]public ushort Type;[FieldOffset(8)]public IntPtr Pointer;}
- [ComImport,Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]interface IProperties {void GetCount(out uint count);void GetAt(uint index,out Key key);void GetValue(ref Key key,out Variant value);}
- [DllImport("ole32.dll")]static extern int PropVariantClear(ref Variant value);
+ [ComImport,Guid("D666063F-1587-4E43-81F1-B948E807363F"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]interface IDevice {void Activate(ref Guid iid,uint context,IntPtr parameter,[MarshalAs(UnmanagedType.IUnknown)]out object value);void OpenPropertyStore(int access,out IPropertyStore properties);void GetId([MarshalAs(UnmanagedType.LPWStr)]out string id);void GetState(out uint state);}
  [ComImport,Guid("5CDF2C82-841E-4546-9722-0CF74078229A"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]interface IVolume {void RegisterControlChangeNotify(IntPtr notify);void UnregisterControlChangeNotify(IntPtr notify);void GetChannelCount(out uint count);void SetMasterVolumeLevel(float level,ref Guid context);void SetMasterVolumeLevelScalar(float level,ref Guid context);void GetMasterVolumeLevel(out float level);void GetMasterVolumeLevelScalar(out float level);void SetChannelVolumeLevel(uint channel,float level,ref Guid context);void SetChannelVolumeLevelScalar(uint channel,float level,ref Guid context);void GetChannelVolumeLevel(uint channel,out float level);void GetChannelVolumeLevelScalar(uint channel,out float level);void SetMute([MarshalAs(UnmanagedType.Bool)]bool mute,ref Guid context);void GetMute([MarshalAs(UnmanagedType.Bool)]out bool mute);}
  public class Output {public string Id,Name;public override string ToString(){return Name;}}
  public class State {public bool Available,Muted;public double Volume;public string Id="",Name="没有音频输出设备",Error="";}
  static void Release(object value){if(value!=null&&Marshal.IsComObject(value))Marshal.ReleaseComObject(value);}
- static string Name(IDevice device){IProperties props=null;Variant value=new Variant();try{device.OpenPropertyStore(0,out props);var key=new Key{Format=new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),Id=14};props.GetValue(ref key,out value);return value.Type==31?Marshal.PtrToStringUni(value.Pointer):"音频输出";}catch{return "音频输出";}finally{PropVariantClear(ref value);Release(props);}}
+ static string Name(IDevice device){IPropertyStore props=null;var value=new PropertyValue();try{device.OpenPropertyStore(0,out props);var key=new PropertyKey{Format=new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),Id=14};props.GetValue(ref key,out value);return value.Type==31?Marshal.PtrToStringUni(value.Pointer):"音频输出";}catch{return "音频输出";}finally{PropertyValue.PropVariantClear(ref value);Release(props);}}
  static void With(Action<IDevice,IVolume> action){IEnum enumerator=null;IDevice device=null;object activated=null;try{enumerator=(IEnum)new Enumerator();enumerator.GetDefaultAudioEndpoint(0,1,out device);Guid iid=new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");device.Activate(ref iid,23,IntPtr.Zero,out activated);action(device,(IVolume)activated);}finally{Release(activated);Release(device);Release(enumerator);}}
  public static State Read(){var result=new State();try{With((device,volume)=>{float level;bool muted;volume.GetMasterVolumeLevelScalar(out level);volume.GetMute(out muted);device.GetId(out result.Id);result.Name=Name(device);result.Volume=level*100;result.Muted=muted;result.Available=true;});}catch(Exception ex){result.Error=ex.GetType().Name;}return result;}
  public static void SetVolume(double value){With((device,volume)=>{Guid context=Guid.Empty;volume.SetMasterVolumeLevelScalar((float)(Math.Max(0,Math.Min(100,value))/100),ref context);});}
@@ -1041,7 +1841,8 @@ public sealed class ControlFlyout:Window {
 }
 public sealed class ControlCenter:Window {
  public bool VisiblePreference{get{return options.Visible;}}
- public void PrepareExit(){closing=true;if(trayMirror!=null){trayMirror.Dispose();trayMirror=null;}ClearTrayHover();if(flyout!=null){flyout.Close();flyout=null;}Save();}
+ public bool TryRestoreCodexFromTray(){return trayMirror!=null&&trayMirror.TryActivate(CodexActivation.OfficialExecutable,dock.PointToScreen(new Point(dock.ActualWidth/2,dock.ActualHeight/2)));}
+ public void PrepareExit(){closing=true;DisposeTray();ClearTrayHover();if(flyout!=null){flyout.Close();flyout=null;}Save();}
  public MenuItem VisibilityMenu(){var item=new MenuItem{Header="显示独立控制中心卡片",IsCheckable=true,IsChecked=IsVisible};item.Click+=(o,e)=>Toggle();return item;}
  public bool IsTrayBackdrop(IntPtr window){return trayHoverBackdrop!=null&&trayHoverBackdrop.Handle==window.ToInt64();}
  public void LowerGlassToDesktop(){if(!IsVisible||Topmost)return;Native.DesktopWidget(this);backdrop.AnchorAboveDesktop(trayHoverBackdrop);}
@@ -1062,21 +1863,25 @@ public sealed class ControlCenter:Window {
  async void BluetoothAction(ControlBluetooth.Device device){if(wirelessBusy)return;wirelessBusy=true;WirelessMessage=device.Paired?(device.Connected?"正在断开…":"正在连接…"):"正在配对…";try{if(!device.Paired){await ControlBluetooth.Pair(device,this);WirelessMessage="配对已完成";}else{bool wanted=!device.Connected;await ControlBluetooth.Connect(device,wanted);bool confirmed=false;for(int round=0;round<16&&!closing;round++){await System.Threading.Tasks.Task.Delay(700);var current=await ControlBluetooth.List(false);var matching=current.FirstOrDefault(d=>d.Id==device.Id||d.Name==device.Name);if(matching!=null&&matching.Connected==wanted){confirmed=true;break;}}WirelessMessage=confirmed?(wanted?"已连接":"已断开"):"请求已提交，设备尚未确认状态变化";}bluetoothDevices=await ControlBluetooth.List(false);lastBluetooth=DateTime.UtcNow;BluetoothDetails();}catch(Exception ex){WirelessMessage=ex.Message;}finally{wirelessBusy=false;Refresh();}}
  async void BluetoothRemove(ControlBluetooth.Device device){TextBox input;var dialog=FrostSkin.Prompt(this,"取消配对","是否移除“"+device.Name+"”的配对？下次需要重新配对。","",out input);input.Visibility=Visibility.Collapsed;if(dialog.ShowDialog()!=true)return;try{await ControlBluetooth.Unpair(device);WirelessMessage="已取消配对";BluetoothDetails();}catch(Exception ex){WirelessMessage=ex.Message;}}
  public static ImageSource Glyph(){var drawing=new DrawingGroup();using(var dc=drawing.Open()){var pen=new Pen(Brushes.White,1.5);for(int row=0;row<3;row++){double y=5+row*7;dc.DrawLine(pen,new Point(2,y),new Point(24,y));double x=row==0?8:row==1?17:11;dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(230,241,250)),null,new Rect(x-2,y-3,4,6),1,1);}}drawing.Freeze();var image=new DrawingImage(drawing);image.Freeze();return image;}
- public static void Probe(ControlCenter center){var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(200)};timer.Tick+=(o,e)=>{string path=System.IO.Path.Combine(Program.S.Root,"control-probe-command.txt");if(!File.Exists(path))return;try{string command=File.ReadAllText(path).Trim();File.Delete(path);if(command=="tray-native")SystemTray.InspectNative();else if(command=="same-values")center.ProbeSameValues();else if(command=="tray-inspect")SystemTray.Inspect();else if(command=="tray")center.OpenTray();else if(command=="tray-self-test"&&center.trayMirror!=null)TrayFixture.Run(center.trayMirror);else if(command=="wifi")center.WifiDetails();else if(command=="bluetooth")center.BluetoothDetails();else if(command=="reveal")center.Reveal();else if(command=="hide")center.Hide();}catch(Exception ex){File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"control-probe-error.txt"),ex.ToString());}};timer.Start();center.Closed+=(o,e)=>timer.Stop();}
- public sealed class Options {public double Glass=0,X=-99999,Y=-99999;public bool Visible=true;public List<string> TrayOrder=new List<string>();}
- readonly Box box;readonly DockBar dock;readonly Border frame;readonly StackPanel content;readonly TextBlock message,battery,wifiText,btText,volumeText,brightnessText,glassText,outputText;readonly Button wifiToggle,btToggle,muteButton;public readonly Image BatteryIcon;public readonly FrameworkElement BatteryFooter;TrayMirror trayMirror;readonly WrapPanel trayIcons;readonly TextBlock trayState;public readonly StackPanel TrayHost;readonly DispatcherTimer trayPoll;int trayRevision=-1;bool trayDragging;const string TrayDragFormat="rushbin.tray.sort.v1";readonly string trayDragToken=Guid.NewGuid().ToString("N")+":";Button traySortTarget;bool traySortAfter;readonly Dictionary<string,Button> trayButtons=new Dictionary<string,Button>();PanelBackdrop trayHoverBackdrop;DispatcherTimer trayHoverTimer;Button trayHovered;double trayHoverAmount,trayHoverTarget;readonly DispatcherTimer poll,saveGlass,writeVolume,writeBrightness;readonly PanelBackdrop backdrop;Options options=new Options();bool refreshing,reading,closing;List<Windows.Devices.Radios.Radio> radios=new List<Windows.Devices.Radios.Radio>();public readonly Slider GlassSlider,VolumeSlider,BrightnessSlider;ControlAudio.State audio=new ControlAudio.State();int? brightness;List<ControlWifi.Available> networks=new List<ControlWifi.Available>();string radioError="";
+ public static void Probe(ControlCenter center){var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(200)};timer.Tick+=(o,e)=>{string path=System.IO.Path.Combine(Program.S.Root,"control-probe-command.txt");if(!File.Exists(path))return;try{string command=File.ReadAllText(path).Trim();File.Delete(path);if(command=="tray-native")SystemTray.InspectNative();else if(command=="same-values")center.ProbeSameValues();else if(command=="tray-inspect")SystemTray.Inspect();else if(command=="tray")center.OpenTray();else if(command=="tray-model-self-test"&&center.trayModel!=null)TrayFixture.CheckModel(center.trayModel,center.ReorderTray);else if(command=="tray-self-test"&&center.trayMirror!=null)TrayFixture.Run(center.trayMirror);else if(command=="wifi")center.WifiDetails();else if(command=="bluetooth")center.BluetoothDetails();else if(command=="reveal")center.Reveal();else if(command=="hide")center.Hide();}catch(Exception ex){File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"control-probe-error.txt"),ex.ToString());}};timer.Start();center.Closed+=(o,e)=>timer.Stop();}
+ public sealed class Options {public double Glass=0,X=-99999,Y=-99999;public bool Visible=!SteamEdition.Enabled;}
+ readonly Box box;readonly DockBar dock;readonly Border frame;readonly StackPanel content;readonly TextBlock message,battery,wifiText,btText,volumeText,brightnessText,glassText,outputText;readonly Button wifiToggle,btToggle,muteButton;public readonly Image BatteryIcon;public readonly FrameworkElement BatteryFooter;TrayMirror trayMirror;TrayModel trayModel;TrayModel.Snapshot dropSnapshot;int trayEpoch;bool readingTray;readonly WrapPanel trayIcons;readonly TextBlock trayState;public readonly StackPanel TrayHost;readonly DispatcherTimer trayPoll;bool trayDragging;const string TrayDragFormat="rushbin.tray.sort.v1";readonly string trayDragToken=Guid.NewGuid().ToString("N")+":";readonly TileSortPreview traySort;readonly Dictionary<string,Button> trayButtons=new Dictionary<string,Button>();PanelBackdrop trayHoverBackdrop;DispatcherTimer trayHoverTimer,trayTipTimer;TrayModel.Entry openTrayTip;Button trayHovered;double trayHoverAmount,trayHoverTarget;readonly DispatcherTimer poll,saveGlass,writeVolume,writeBrightness;readonly PanelBackdrop backdrop;Options options=new Options();bool refreshing,reading,closing;List<Windows.Devices.Radios.Radio> radios=new List<Windows.Devices.Radios.Radio>();public readonly Slider GlassSlider,VolumeSlider,BrightnessSlider;ControlAudio.State audio=new ControlAudio.State();int? brightness;List<ControlWifi.Available> networks=new List<ControlWifi.Available>();string radioError="";
  string Config{get{return System.IO.Path.Combine(Program.S.Root,"control-center.json");}}
- public ControlCenter(Box owner,DockBar bar){box=owner;dock=bar;try{if(File.Exists(Config))options=new JavaScriptSerializer().Deserialize<Options>(File.ReadAllText(Config));}catch{}if(options==null)options=new Options();options.TrayOrder=TrayArrangement.Normalize(options.TrayOrder);if(Double.IsNaN(options.X)||Double.IsInfinity(options.X))options.X=-99999;if(Double.IsNaN(options.Y)||Double.IsInfinity(options.Y))options.Y=-99999;if(Double.IsNaN(options.Glass)||Double.IsInfinity(options.Glass))options.Glass=0;options.Glass=Math.Max(0,Math.Min(100,options.Glass));Title="rushbin 控制中心";Width=346;SizeToContent=SizeToContent.Height;MaxHeight=SystemParameters.WorkArea.Height-32;WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.NoResize;AllowsTransparency=true;Background=Brushes.Transparent;Foreground=Brushes.White;FontFamily=new FontFamily("Microsoft YaHei UI");FontSize=12;ShowInTaskbar=Program.ControlCheck;ShowActivated=false;Focusable=false;Topmost=Program.ControlCheck;
-  frame=new Border{Margin=new Thickness(6),CornerRadius=new CornerRadius(20),BorderThickness=new Thickness(1),Padding=new Thickness(20,16,20,16)};Content=frame;content=new StackPanel();frame.Child=new ScrollViewer{Focusable=false,FocusVisualStyle=null,Content=content,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};backdrop=new PanelBackdrop(this,()=>options.Glass/100,20);trayHoverBackdrop=new PanelBackdrop(this,()=>trayHoverAmount,10,TrayHoverBounds);trayHoverTimer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(16)};trayHoverTimer.Tick+=(o,e)=>TrayHoverTick();
+ public ControlCenter(Box owner,DockBar bar){box=owner;dock=bar;try{if(File.Exists(Config))options=new JavaScriptSerializer().Deserialize<Options>(File.ReadAllText(Config));}catch{}if(options==null)options=new Options();if(Double.IsNaN(options.X)||Double.IsInfinity(options.X))options.X=-99999;if(Double.IsNaN(options.Y)||Double.IsInfinity(options.Y))options.Y=-99999;if(Double.IsNaN(options.Glass)||Double.IsInfinity(options.Glass))options.Glass=0;options.Glass=Math.Max(0,Math.Min(100,options.Glass));Title="rushbin 控制中心";Width=346;SizeToContent=SizeToContent.Height;MaxHeight=SystemParameters.WorkArea.Height-32;WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.NoResize;AllowsTransparency=true;Background=Brushes.Transparent;Foreground=Brushes.White;FontFamily=new FontFamily("Microsoft YaHei UI");FontSize=12;ShowInTaskbar=Program.ControlCheck;ShowActivated=false;Focusable=false;Topmost=Program.ControlCheck;
+  frame=new Border{Margin=new Thickness(6),CornerRadius=new CornerRadius(20),BorderThickness=new Thickness(1),Padding=new Thickness(20,16,20,16)};var layout=new Grid{Children={frame}};Content=layout;content=new StackPanel();frame.Child=new ScrollViewer{Focusable=false,FocusVisualStyle=null,Content=content,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};backdrop=new PanelBackdrop(this,()=>options.Glass/100,20);trayHoverBackdrop=new PanelBackdrop(this,()=>trayHoverAmount,10,TrayHoverBounds);trayHoverTimer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(16)};trayHoverTimer.Tick+=(o,e)=>TrayHoverTick();trayTipTimer=new DispatcherTimer{Interval=SystemParameters.MouseHoverTime};trayTipTimer.Tick+=(o,e)=>ShowTrayTip();
   var header=new DockPanel{Margin=new Thickness(0,0,0,15)};var close=Action("×",HideCard);close.Width=28;close.Height=28;close.Padding=new Thickness(0);close.FontSize=19;DockPanel.SetDock(close,Dock.Right);header.Children.Add(close);var title=new TextBlock{Text="控制中心",FontSize=20,FontWeight=FontWeights.SemiBold,VerticalAlignment=VerticalAlignment.Center};title.MouseLeftButtonDown+=(o,e)=>{if(e.ClickCount==1){double x=Left,y=Top;DragMove();if(Math.Abs(Left-x)>1||Math.Abs(Top-y)>1)SavePosition();}};header.Children.Add(title);content.Children.Add(header);
   wifiText=new TextBlock();btText=new TextBlock();wifiToggle=Action("",()=>ToggleRadio(Windows.Devices.Radios.RadioKind.WiFi));btToggle=Action("",()=>ToggleRadio(Windows.Devices.Radios.RadioKind.Bluetooth));var radioGrid=new Grid{Margin=new Thickness(0,0,0,4)};radioGrid.ColumnDefinitions.Add(new ColumnDefinition());radioGrid.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(12)});radioGrid.ColumnDefinitions.Add(new ColumnDefinition());var wifi=RadioTile("\uE701","Wi-Fi",wifiText,wifiToggle,WifiDetails,Windows.Devices.Radios.RadioKind.WiFi);var blue=RadioTile("\uE702","蓝牙",btText,btToggle,BluetoothDetails,Windows.Devices.Radios.RadioKind.Bluetooth);radioGrid.Children.Add(wifi);Grid.SetColumn(blue,2);radioGrid.Children.Add(blue);content.Children.Add(radioGrid);
   volumeText=Label("音量");content.Children.Add(volumeText);var volumeRow=new DockPanel();muteButton=Action("静音",()=>{ControlAudio.SetMute(!audio.Muted);Refresh();});muteButton.Width=50;DockPanel.SetDock(muteButton,Dock.Right);volumeRow.Children.Add(muteButton);VolumeSlider=Slider(0);volumeRow.Children.Add(VolumeSlider);content.Children.Add(volumeRow);outputText=new TextBlock{Text="选择音频输出  ›",TextTrimming=TextTrimming.CharacterEllipsis,FontSize=11};var output=Action("",OutputsMenu);output.Content=outputText;output.HorizontalContentAlignment=HorizontalAlignment.Stretch;output.Margin=new Thickness(0,6,0,5);content.Children.Add(output);
   brightnessText=Label("屏幕亮度");content.Children.Add(brightnessText);BrightnessSlider=Slider(0);content.Children.Add(BrightnessSlider);battery=new TextBlock{FontSize=11,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(7,0,0,0)};
-  TrayHost=new StackPanel{Tag="system-hidden-tray",Margin=new Thickness(0,17,0,4)};var trayHeader=new DockPanel();var refreshTray=Action("↻",()=>{if(trayMirror!=null)trayMirror.RefreshRegistration();});refreshTray.Width=26;refreshTray.ToolTip="刷新托盘图标";System.Windows.Automation.AutomationProperties.SetName(refreshTray,"刷新系统隐藏托盘");DockPanel.SetDock(refreshTray,Dock.Right);trayHeader.Children.Add(refreshTray);trayHeader.Children.Add(new TextBlock{Text="系统隐藏托盘",FontSize=12,VerticalAlignment=VerticalAlignment.Center});TrayHost.Children.Add(trayHeader);trayIcons=new WrapPanel{Margin=new Thickness(0,6,0,0),AllowDrop=true};trayIcons.PreviewDragOver+=TrayDragOver;trayIcons.PreviewDrop+=TrayDrop;trayIcons.DragLeave+=(o,e)=>ClearTraySortHint();TrayHost.Children.Add(trayIcons);trayState=new TextBlock{Text="正在读取托盘图标…",FontSize=10,Opacity=.65,TextWrapping=TextWrapping.Wrap};TrayHost.Children.Add(trayState);
+  TrayHost=new StackPanel{Tag="system-hidden-tray",Margin=new Thickness(0,17,0,4)};var trayHeader=new DockPanel();var refreshTray=Action("↻",()=>{RenderTray();});refreshTray.Width=26;refreshTray.ToolTip="刷新托盘图标";System.Windows.Automation.AutomationProperties.SetName(refreshTray,"刷新系统隐藏托盘");DockPanel.SetDock(refreshTray,Dock.Right);trayHeader.Children.Add(refreshTray);trayHeader.Children.Add(new TextBlock{Text="系统隐藏托盘",FontSize=12,VerticalAlignment=VerticalAlignment.Center});TrayHost.Children.Add(trayHeader);trayIcons=new WrapPanel{Margin=new Thickness(0,6,0,0),Background=Brushes.Transparent,AllowDrop=true};
+  traySort=new TileSortPreview(trayIcons,layout,"tray-drag-image",TrayButtonId);
+  trayIcons.PreviewDragOver+=TrayDragOver;trayIcons.PreviewDrop+=TrayDrop;
+  trayIcons.PreviewDragLeave+=(o,e)=>{var point=e.GetPosition(trayIcons);if(point.X<0||point.Y<0||point.X>=trayIcons.ActualWidth||point.Y>=trayIcons.ActualHeight)traySort.Reset();};
+  TrayHost.Children.Add(trayIcons);trayState=new TextBlock{Text="正在读取托盘图标…",FontSize=10,Opacity=.65,TextWrapping=TextWrapping.Wrap};TrayHost.Children.Add(trayState);
 
-  var footer=new DockPanel{Margin=new Thickness(0,8,0,0)};glassText=new TextBlock{Width=38,TextAlignment=TextAlignment.Right,VerticalAlignment=VerticalAlignment.Center,FontSize=11};DockPanel.SetDock(glassText,Dock.Right);footer.Children.Add(glassText);var caption=new TextBlock{Text="玻璃质感",VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(0,0,10,0),FontSize=11,Opacity=.8};DockPanel.SetDock(caption,Dock.Left);footer.Children.Add(caption);GlassSlider=Slider(options.Glass);GlassSlider.ToolTip="0% 清透玻璃 · 100% 磨砂玻璃";footer.Children.Add(GlassSlider);content.Children.Add(footer);content.Children.Add(TrayHost);var bottom=new DockPanel{Margin=new Thickness(0,14,0,0)};var settings=Action("系统设置",()=>ControlHardware.Settings("ms-settings:"));settings.FontSize=11;DockPanel.SetDock(settings,Dock.Right);bottom.Children.Add(settings);var taskManager=Action("任务管理器",()=>System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"Taskmgr.exe")){UseShellExecute=true}));taskManager.Tag="open-task-manager";taskManager.FontSize=11;taskManager.Margin=new Thickness(0,0,8,0);DockPanel.SetDock(taskManager,Dock.Right);bottom.Children.Add(taskManager);var power=new StackPanel{Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center,Tag="battery-footer"};BatteryIcon=new Image{Width=29,Height=20,Stretch=Stretch.Uniform,VerticalAlignment=VerticalAlignment.Center};power.Children.Add(BatteryIcon);power.Children.Add(battery);BatteryFooter=power;bottom.Children.Add(power);content.Children.Add(bottom);message=new TextBlock{FontSize=10,Opacity=.7,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,0)};content.Children.Add(message);
+  var footer=new DockPanel{Margin=new Thickness(0,8,0,0)};glassText=new TextBlock{Width=38,TextAlignment=TextAlignment.Right,VerticalAlignment=VerticalAlignment.Center,FontSize=11};DockPanel.SetDock(glassText,Dock.Right);footer.Children.Add(glassText);var caption=new TextBlock{Text="玻璃质感",VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(0,0,10,0),FontSize=11,Opacity=.8};DockPanel.SetDock(caption,Dock.Left);footer.Children.Add(caption);GlassSlider=Slider(options.Glass);GlassSlider.ToolTip="0% 清透玻璃 · 100% 磨砂玻璃";footer.Children.Add(GlassSlider);content.Children.Add(footer);content.Children.Add(TrayHost);var bottom=new DockPanel{Margin=new Thickness(0,14,0,0)};var settings=Action("系统设置",()=>ControlHardware.Settings("ms-settings:"));settings.FontSize=11;DockPanel.SetDock(settings,Dock.Right);bottom.Children.Add(settings);var taskManager=Action("任务管理器",()=>RunningApps.OpenTaskManager(dock.Apps.Windows));taskManager.Tag="open-task-manager";taskManager.FontSize=11;taskManager.Margin=new Thickness(0,0,8,0);DockPanel.SetDock(taskManager,Dock.Right);bottom.Children.Add(taskManager);var power=new StackPanel{Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center,Tag="battery-footer"};BatteryIcon=new Image{Width=29,Height=20,Stretch=Stretch.Uniform,VerticalAlignment=VerticalAlignment.Center};power.Children.Add(BatteryIcon);power.Children.Add(battery);BatteryFooter=power;bottom.Children.Add(power);content.Children.Add(bottom);message=new TextBlock{FontSize=10,Opacity=.7,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,0)};content.Children.Add(message);
 
-  saveGlass=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(350)};saveGlass.Tick+=(o,e)=>{saveGlass.Stop();Save();};GlassSlider.ValueChanged+=(o,e)=>{options.Glass=e.NewValue;Paint();saveGlass.Stop();saveGlass.Start();};writeVolume=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(120)};writeVolume.Tick+=(o,e)=>{writeVolume.Stop();Safe(()=>ControlAudio.SetVolume(VolumeSlider.Value));};writeBrightness=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(160)};writeBrightness.Tick+=(o,e)=>{writeBrightness.Stop();Safe(()=>ControlHardware.SetBrightness(BrightnessSlider.Value));};VolumeSlider.ValueChanged+=(o,e)=>{if(refreshing)return;volumeText.Text="音量  "+e.NewValue.ToString("0")+"%";writeVolume.Stop();writeVolume.Start();};BrightnessSlider.ValueChanged+=(o,e)=>{if(refreshing)return;brightnessText.Text="屏幕亮度  "+e.NewValue.ToString("0")+"%";writeBrightness.Stop();writeBrightness.Start();};poll=new DispatcherTimer{Interval=TimeSpan.FromSeconds(3)};poll.Tick+=(o,e)=>Refresh();ComponentSizer.Attach(this,"control",310,300);trayPoll=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(350)};trayPoll.Tick+=(o,e)=>RenderTray();if(!Program.Testing){trayMirror=new TrayMirror();trayPoll.Start();}if(Program.ControlCheck)Probe(this);SourceInitialized+=(o,e)=>{Native.StableControlStyle(this);if(!Program.ControlCheck)Native.DesktopWidget(this);var source=HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);source.AddHook((IntPtr h,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x21){handled=true;return new IntPtr(3);}if(msg==0x86){handled=true;return Native.ActivateWithoutFramePaint(h,wp);}return IntPtr.Zero;});};Loaded+=(o,e)=>{foreach(var element in AppearanceProbe.Visuals<Control>(this))element.Focusable=false;Paint();};SizeChanged+=(o,e)=>{KeepInWorkArea();Native.ClipGlass(this,20);backdrop.Update();};LocationChanged+=(o,e)=>backdrop.Update();IsVisibleChanged+=(o,e)=>{if(IsVisible){poll.Start();Paint();Refresh();}else{poll.Stop();ClearTrayHover();backdrop.Update();Save();Record();}};Deactivated+=(o,e)=>{if(!Program.ControlCheck&&!closing&&!Native.OwnForeground()){Native.LowerToDesktop(this);UpdateLayer();}};Closing+=(o,e)=>{if(!closing&&!Program.ControlCheck&&!Program.Testing){e.Cancel=true;HideCard();}};PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Escape&&!trayDragging){HideCard();e.Handled=true;}};Closed+=(o,e)=>{closing=true;poll.Stop();trayPoll.Stop();ClearTrayHover();trayHoverBackdrop.Dispose();if(trayMirror!=null){trayMirror.Dispose();trayMirror=null;}saveGlass.Stop();writeVolume.Stop();writeBrightness.Stop();if(flyout!=null){flyout.Close();flyout=null;}backdrop.Dispose();};Application.Current.SessionEnding+=(o,e)=>PrepareExit();Paint();
+  saveGlass=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(350)};saveGlass.Tick+=(o,e)=>{saveGlass.Stop();Save();};GlassSlider.ValueChanged+=(o,e)=>{options.Glass=e.NewValue;Paint();saveGlass.Stop();saveGlass.Start();};writeVolume=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(120)};writeVolume.Tick+=(o,e)=>{writeVolume.Stop();Safe(()=>ControlAudio.SetVolume(VolumeSlider.Value));};writeBrightness=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(160)};writeBrightness.Tick+=(o,e)=>{writeBrightness.Stop();Safe(()=>ControlHardware.SetBrightness(BrightnessSlider.Value));};VolumeSlider.ValueChanged+=(o,e)=>{if(refreshing)return;volumeText.Text="音量  "+e.NewValue.ToString("0")+"%";writeVolume.Stop();writeVolume.Start();};BrightnessSlider.ValueChanged+=(o,e)=>{if(refreshing)return;brightnessText.Text="屏幕亮度  "+e.NewValue.ToString("0")+"%";writeBrightness.Stop();writeBrightness.Start();};poll=new DispatcherTimer{Interval=TimeSpan.FromSeconds(3)};poll.Tick+=(o,e)=>Refresh();ComponentSizer.Attach(this,"control",310,300);trayPoll=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(750)};trayPoll.Tick+=(o,e)=>RenderTray();if(SteamEdition.Enabled)TrayHost.Visibility=Visibility.Collapsed;else if(!Program.Testing){trayMirror=new TrayMirror();trayModel=new TrayModel();trayPoll.Start();}if(Program.ControlCheck)Probe(this);SourceInitialized+=(o,e)=>{Native.StableControlStyle(this);if(!Program.ControlCheck)Native.DesktopWidget(this);var source=HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);source.AddHook((IntPtr h,int msg,IntPtr wp,IntPtr lp,ref bool handled)=>{if(msg==0x21){handled=true;return new IntPtr(3);}if(msg==0x86){handled=true;return Native.ActivateWithoutFramePaint(h,wp);}return IntPtr.Zero;});};Loaded+=(o,e)=>{foreach(var element in AppearanceProbe.Visuals<Control>(this))element.Focusable=false;Paint();};SizeChanged+=(o,e)=>{KeepInWorkArea();Native.ClipGlass(this,20);backdrop.Update();};LocationChanged+=(o,e)=>backdrop.Update();IsVisibleChanged+=(o,e)=>{if(IsVisible){poll.Start();Paint();Refresh();}else{poll.Stop();ClearTrayHover();backdrop.Update();Save();Record();}};Deactivated+=(o,e)=>{if(!Program.ControlCheck&&!closing&&!Native.OwnForeground()){Native.LowerToDesktop(this);UpdateLayer();}};Closing+=(o,e)=>{if(!closing&&!Program.ControlCheck&&!Program.Testing){e.Cancel=true;HideCard();}};PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Escape&&!trayDragging){HideCard();e.Handled=true;}};Closed+=(o,e)=>{closing=true;poll.Stop();trayPoll.Stop();ClearTrayHover();trayHoverBackdrop.Dispose();DisposeTray();saveGlass.Stop();writeVolume.Stop();writeBrightness.Stop();if(flyout!=null){flyout.Close();flyout=null;}backdrop.Dispose();};Application.Current.SessionEnding+=(o,e)=>PrepareExit();Paint();
  }
  TextBlock Label(string text){return new TextBlock{Text=text,Margin=new Thickness(0,12,0,7),Opacity=.85};}
  Button Action(string text,Action action){var button=box.B(text,()=>Safe(action));button.Focusable=false;button.FontSize=12;button.Margin=new Thickness(0);return button;}
@@ -1092,22 +1897,176 @@ public sealed class ControlCenter:Window {
  void Menu(IEnumerable<Tuple<string,Action>> entries){var menu=new ContextMenu{PlacementTarget=this,Placement=PlacementMode.MousePoint};foreach(var entry in entries){var item=new MenuItem{Header=entry.Item1};var action=entry.Item2;item.Click+=(o,e)=>Safe(action);menu.Items.Add(item);}menu.IsOpen=true;}
  void OutputsMenu(){var entries=ControlAudio.Outputs().Select(o=>{var output=o;return Tuple.Create((o.Id==audio.Id?"✓  ":"")+o.Name,(Action)(()=>{ControlAudio.SetOutput(output.Id);Refresh();}));}).ToList();entries.Add(Tuple.Create("声音设置…",(Action)(()=>ControlHardware.Settings("ms-settings:sound"))));Menu(entries);}
  void OpenTray(){RenderTray();}
- void WireTrayDrag(Button button,EntryGesture gesture){bool armed=false;button.PreviewMouseLeftButtonDown+=(o,e)=>{gesture.Press(e.GetPosition(button),e.ClickCount);armed=e.ClickCount==1;};button.PreviewMouseLeftButtonUp+=(o,e)=>armed=false;button.PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Space||e.Key==Key.Enter)gesture.Press(new Point(),1);};button.AddHandler(UIElement.PreviewMouseMoveEvent,new MouseEventHandler((o,e)=>{if(e.LeftButton!=MouseButtonState.Pressed||!armed||trayDragging||!gesture.Move(e.GetPosition(button)))return;var item=button.DataContext as TrayMirror.IconItem;if(item==null)return;armed=false;e.Handled=true;button.ReleaseMouseCapture();ClearTrayHover();trayDragging=true;button.Opacity=.45;var payload=new DataObject();payload.SetData(TrayDragFormat,trayDragToken+TrayArrangement.Identity(item));DragDropEffects effect=DragDropEffects.None;try{effect=DragDrop.DoDragDrop(button,payload,DragDropEffects.Move);}finally{gesture.Cancel();button.Opacity=1;trayDragging=false;ClearTraySortHint();trayRevision=-1;RenderTray();try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"tray-drag-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),entry=TrayArrangement.Identity(item),effect=effect.ToString(),clickSuppressed=true}),Encoding.UTF8);}catch{}}}),true);}
+ void WireTrayDrag(Button button,EntryGesture gesture){bool armed=false;button.PreviewMouseLeftButtonDown+=(o,e)=>{gesture.Press(e.GetPosition(button),e.ClickCount);armed=e.ClickCount==1;};button.PreviewMouseLeftButtonUp+=(o,e)=>armed=false;button.PreviewKeyDown+=(o,e)=>{if(e.Key==Key.Space||e.Key==Key.Enter)gesture.Press(new Point(),1);};button.AddHandler(UIElement.PreviewMouseMoveEvent,new MouseEventHandler((o,e)=>{if(e.LeftButton!=MouseButtonState.Pressed||!armed||trayDragging||!gesture.Move(e.GetPosition(button)))return;string id=TrayButtonId(button);if(id==null)return;armed=false;e.Handled=true;button.ReleaseMouseCapture();ClearTrayHover();trayDragging=true;var payload=new DataObject();payload.SetData(TrayDragFormat,trayDragToken+id);DragDropEffects effect=DragDropEffects.None;try{effect=traySort.Run(button,gesture.Grip,payload,DragDropEffects.Move);}
+  finally{gesture.Cancel();trayDragging=false;traySort.Finish(ApplyTrayDrop,effect==DragDropEffects.Move);try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"tray-drag-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),entry=id,effect=effect.ToString(),clickSuppressed=true}),Encoding.UTF8);}catch{}}}),true);}
  string TrayDragId(System.Windows.IDataObject data){if(!trayDragging||!data.GetDataPresent(TrayDragFormat,false))return null;var text=data.GetData(TrayDragFormat,false) as string;return text!=null&&text.StartsWith(trayDragToken,StringComparison.Ordinal)?text.Substring(trayDragToken.Length):null;}
- Tuple<Button,bool> TrayTarget(Point point){var buttons=trayIcons.Children.OfType<Button>().Where(b=>b.DataContext is TrayMirror.IconItem).ToArray();if(buttons.Length==0)return null;Func<Button,Rect> bounds=b=>new Rect(b.TranslatePoint(new Point(),trayIcons),b.RenderSize);if(point.Y>buttons.Max(b=>bounds(b).Bottom))return Tuple.Create(buttons.Last(),true);if(point.Y<buttons.Min(b=>bounds(b).Top))return Tuple.Create(buttons.First(),false);var target=buttons.OrderBy(b=>{var r=bounds(b);double dx=point.X-(r.Left+r.Width/2),dy=point.Y-(r.Top+r.Height/2);return dx*dx+dy*dy;}).First();var rect=bounds(target);return Tuple.Create(target,point.X>=rect.Left+rect.Width/2);}
- void ClearTraySortHint(){if(traySortTarget!=null){var marker=traySortTarget.Template.FindName("TraySortMarker",traySortTarget) as Border;if(marker!=null)marker.Visibility=Visibility.Collapsed;}traySortTarget=null;}
- void TrayDragOver(object sender,DragEventArgs e){e.Handled=true;e.Effects=DragDropEffects.None;if(TrayDragId(e.Data)==null){ClearTraySortHint();return;}var target=TrayTarget(e.GetPosition(trayIcons));if(target==null)return;e.Effects=DragDropEffects.Move;if(traySortTarget!=target.Item1||traySortAfter!=target.Item2){ClearTraySortHint();traySortTarget=target.Item1;traySortAfter=target.Item2;var marker=traySortTarget.Template.FindName("TraySortMarker",traySortTarget) as Border;if(marker!=null){marker.HorizontalAlignment=traySortAfter?HorizontalAlignment.Right:HorizontalAlignment.Left;marker.Visibility=Visibility.Visible;}}}
- void TrayDrop(object sender,DragEventArgs e){e.Handled=true;e.Effects=DragDropEffects.None;string moving=TrayDragId(e.Data);var target=TrayTarget(e.GetPosition(trayIcons));ClearTraySortHint();if(moving==null||target==null)return;var entry=target.Item1.DataContext as TrayMirror.IconItem;if(entry!=null&&ReorderTray(moving,TrayArrangement.Identity(entry),target.Item2))e.Effects=DragDropEffects.Move;}
- public bool ReorderTray(string moving,string target,bool after){var current=trayIcons.Children.OfType<Button>().Select(b=>b.DataContext as TrayMirror.IconItem).Where(i=>i!=null).Select(TrayArrangement.Identity).ToArray();if(!current.Contains(moving)||!current.Contains(target))return false;var desired=TrayArrangement.Move(current,current,moving,target,after);if(desired.SequenceEqual(current))return false;var old=options.TrayOrder;options.TrayOrder=TrayArrangement.Move(old,current,moving,target,after);if(!Save()){options.TrayOrder=old;return false;}trayRevision=-1;try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"tray-sort-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),moving,target,after,before=current,savedOrder=options.TrayOrder,scope="Only rushbin tray display order; native tray settings and icon callbacks unchanged"}),Encoding.UTF8);}catch{}if(!trayDragging)RenderTray();return true;}
- Button TrayButton(Image image){var button=WindowPreview.PlainButton(image);button.Focusable=false;button.Background=new SolidColorBrush(Colors.Transparent);button.BorderBrush=new SolidColorBrush(Colors.Transparent);var frame=new FrameworkElementFactory(typeof(Border));frame.SetValue(Border.CornerRadiusProperty,new CornerRadius(10));frame.SetValue(Border.BorderThicknessProperty,new Thickness(1));frame.SetBinding(Border.BackgroundProperty,new System.Windows.Data.Binding("Background"){RelativeSource=new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)});frame.SetBinding(Border.BorderBrushProperty,new System.Windows.Data.Binding("BorderBrush"){RelativeSource=new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)});var presenter=new FrameworkElementFactory(typeof(ContentPresenter));presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty,HorizontalAlignment.Center);presenter.SetValue(ContentPresenter.VerticalAlignmentProperty,VerticalAlignment.Center);var grid=new FrameworkElementFactory(typeof(Grid));grid.AppendChild(presenter);var marker=new FrameworkElementFactory(typeof(Border),"TraySortMarker");marker.SetValue(Border.WidthProperty,2.0);marker.SetValue(Border.HeightProperty,28.0);marker.SetValue(Border.CornerRadiusProperty,new CornerRadius(1));marker.SetValue(Border.BackgroundProperty,new SolidColorBrush(Color.FromRgb(154,238,220)));marker.SetValue(Border.VisibilityProperty,Visibility.Collapsed);marker.SetValue(Border.HorizontalAlignmentProperty,HorizontalAlignment.Left);marker.SetValue(Border.IsHitTestVisibleProperty,false);grid.AppendChild(marker);frame.AppendChild(grid);button.Template=new ControlTemplate(typeof(Button)){VisualTree=frame};return button;}
+ static string TrayButtonId(Button button){
+  var item=button.DataContext as TrayModel.Entry;
+  return item==null?null:item.Identity;
+ }
+ static int TraySlot(Button[] buttons,Point point){
+  if(buttons.Length==0)return 0;
+  var cells=buttons.Select(TileSortPreview.Bounds).ToArray();
+  if(point.Y<cells[0].Top)return 0;
+  if(point.Y>cells[cells.Length-1].Bottom)return buttons.Length;
+  int target=0;
+  double nearest=Double.PositiveInfinity;
+  for(int index=0;index<cells.Length;index++){
+   var rect=cells[index];double dx=point.X-(rect.Left+rect.Width/2),dy=point.Y-(rect.Top+rect.Height/2);
+   double distance=dx*dx+dy*dy;
+   if(distance<nearest){nearest=distance;target=index;}
+  }
+  return target+(point.X>=cells[target].Left+cells[target].Width/2?1:0);
+ }
+ Button[] TrayPreview(Point point,out int slot){
+  var buttons=trayIcons.Children.OfType<Button>().Where(button=>TrayButtonId(button)!=null).ToArray();
+  slot=TraySlot(buttons,point);traySort.Preview(buttons,slot,point);
+  return buttons;
+ }
+ void TrayDragOver(object sender,DragEventArgs e){
+  e.Handled=true;e.Effects=DragDropEffects.None;
+  if(TrayDragId(e.Data)==null){traySort.Reset();return;}
+  int slot;
+  if(TrayPreview(e.GetPosition(trayIcons),out slot).Length>0)e.Effects=DragDropEffects.Move;
+ }
+ void TrayDrop(object sender,DragEventArgs e){
+  e.Handled=true;e.Effects=DragDropEffects.None;
+  string moving=TrayDragId(e.Data);
+  if(moving==null)return;
+  int slot;var buttons=TrayPreview(e.GetPosition(trayIcons),out slot);
+  if(buttons.Length==0)return;
+  bool after=slot==buttons.Length;
+  if(ReorderTray(moving,TrayButtonId(buttons[Math.Min(slot,buttons.Length-1)]),after))e.Effects=DragDropEffects.Move;
+ }
+ public bool ReorderTray(string moving,string target,bool after){
+  if(trayModel==null)return false;
+  var entries=trayIcons.Children.OfType<Button>().Select(b=>b.DataContext as TrayModel.Entry).ToArray();
+  var source=entries.FirstOrDefault(entry=>entry.Identity==moving);
+  var anchor=entries.FirstOrDefault(entry=>entry.Identity==target);
+  if(source==null||anchor==null||source==anchor)return false;
+  try{
+   trayEpoch++;
+   var observed=trayModel.Move(source,anchor,after);
+   int sourceIndex=observed.Entries.FindIndex(entry=>entry.Token==source.Token);
+   int targetIndex=observed.Entries.FindIndex(entry=>entry.Token==anchor.Token);
+   bool changed=sourceIndex>=0&&targetIndex>=0&&sourceIndex!=Array.IndexOf(entries,source)
+    &&sourceIndex==targetIndex+(after?1:-1);
+   if(trayDragging)dropSnapshot=observed;else ApplyTraySnapshot(observed);
+   return changed;
+  }catch(Exception ex){trayState.Text=ex.Message;return false;}
+ }
+ void ApplyTrayDrop(){
+  var snapshot=dropSnapshot;dropSnapshot=null;
+  if(snapshot!=null)ApplyTraySnapshot(snapshot);
+  else RenderTray();
+ }
+ Button TrayButton(Image image){var button=WindowPreview.PlainButton(image);button.Focusable=false;button.Background=new SolidColorBrush(Colors.Transparent);button.BorderBrush=new SolidColorBrush(Colors.Transparent);var frame=new FrameworkElementFactory(typeof(Border));frame.SetValue(Border.CornerRadiusProperty,new CornerRadius(10));frame.SetValue(Border.BorderThicknessProperty,new Thickness(1));frame.SetBinding(Border.BackgroundProperty,new System.Windows.Data.Binding("Background"){RelativeSource=new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)});frame.SetBinding(Border.BorderBrushProperty,new System.Windows.Data.Binding("BorderBrush"){RelativeSource=new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)});var presenter=new FrameworkElementFactory(typeof(ContentPresenter));presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty,HorizontalAlignment.Center);presenter.SetValue(ContentPresenter.VerticalAlignmentProperty,VerticalAlignment.Center);frame.AppendChild(presenter);button.Template=new ControlTemplate(typeof(Button)){VisualTree=frame};return button;}
  System.Windows.Rect? TrayHoverBounds(){if(trayHovered==null||!trayHovered.IsVisible||trayHovered.ActualWidth<=0)return null;var point=trayHovered.TranslatePoint(new Point(),this);return new System.Windows.Rect(point,new Size(trayHovered.ActualWidth,trayHovered.ActualHeight));}
- void SetTrayHover(Button button){if(trayDragging)return;if(trayHovered!=button){ClearTrayHover();trayHovered=button;}trayHoverTarget=1;trayHoverTimer.Start();}
- void ClearTrayHover(){if(trayHoverTimer!=null)trayHoverTimer.Stop();if(trayHovered!=null){trayHovered.Background=new SolidColorBrush(Colors.Transparent);trayHovered.BorderBrush=new SolidColorBrush(Colors.Transparent);}trayHovered=null;trayHoverAmount=trayHoverTarget=0;if(trayHoverBackdrop!=null)trayHoverBackdrop.Update();}
+ void SetTrayHover(Button button){
+  if(trayDragging)return;
+  if(trayHovered!=button){ClearTrayHover();trayHovered=button;}
+  trayHoverTarget=1;trayHoverTimer.Start();
+  var entry=button.DataContext as TrayModel.Entry;
+  if(entry!=null&&entry.OwnsTip&&openTrayTip==null)trayTipTimer.Start();
+ }
+ void ShowTrayTip(){
+  trayTipTimer.Stop();
+  if(trayHovered==null||!trayHovered.IsMouseOver||trayDragging||trayModel==null)return;
+  var entry=trayHovered.DataContext as TrayModel.Entry;
+  if(entry!=null&&entry.OwnsTip&&RequestTrayTip(entry,TrayModel.Operation.TipOpen))openTrayTip=entry;
+ }
+ void CloseTrayTip(){
+  trayTipTimer.Stop();
+  var entry=openTrayTip;openTrayTip=null;
+  if(entry!=null&&trayModel!=null)RequestTrayTip(entry,TrayModel.Operation.TipClose);
+ }
+ bool RequestTrayTip(TrayModel.Entry entry,TrayModel.Operation action){
+  try{
+   var cursor=Forms.Cursor.Position;
+   trayModel.Activate(entry,action,new Point(cursor.X,cursor.Y));return true;
+  }catch(InvalidOperationException){}catch(System.ComponentModel.Win32Exception){}catch(NotSupportedException){}
+  return false;
+ }
+ void ClearTrayHover(){CloseTrayTip();if(trayHoverTimer!=null)trayHoverTimer.Stop();if(trayHovered!=null){trayHovered.Background=new SolidColorBrush(Colors.Transparent);trayHovered.BorderBrush=new SolidColorBrush(Colors.Transparent);}trayHovered=null;trayHoverAmount=trayHoverTarget=0;if(trayHoverBackdrop!=null)trayHoverBackdrop.Update();}
  void TrayHoverTick(){if(!IsVisible||trayHovered==null){ClearTrayHover();return;}trayHoverAmount+=(trayHoverTarget-trayHoverAmount)*.23;bool reached=Math.Abs(trayHoverTarget-trayHoverAmount)<.008;if(reached)trayHoverAmount=trayHoverTarget;trayHovered.Background=new SolidColorBrush(Color.FromArgb((byte)(38*trayHoverAmount),220,239,248));trayHovered.BorderBrush=new SolidColorBrush(Color.FromArgb((byte)(65*trayHoverAmount),235,248,255));trayHoverBackdrop.Update();if(reached){trayHoverTimer.Stop();if(trayHoverAmount==0)ClearTrayHover();Record();}}
- void RenderTray(){if(trayMirror==null||closing||!IsVisible||trayDragging)return;try{var items=TrayArrangement.Apply(trayMirror.Items,options.TrayOrder);if(trayRevision==trayMirror.Revision&&trayIcons.Children.Count==items.Count)return;trayRevision=trayMirror.Revision;foreach(string key in trayButtons.Keys.Where(k=>!items.Any(i=>i.Key==k)).ToArray()){if(trayHovered==trayButtons[key])ClearTrayHover();trayIcons.Children.Remove(trayButtons[key]);trayButtons.Remove(key);}for(int index=0;index<items.Count;index++){var entry=items[index];Button button;if(!trayButtons.TryGetValue(entry.Key,out button)){button=TrayButton(new Image{Width=25,Height=25,Stretch=Stretch.Uniform});button.Width=40;button.Height=40;button.Margin=new Thickness(2);button.Tag="tray-custom-icon";var target=button;var gesture=new EntryGesture();WireTrayDrag(button,gesture);button.MouseEnter+=(o,e)=>SetTrayHover(target);button.MouseLeave+=(o,e)=>{if(trayHovered==target){trayHoverTarget=0;trayHoverTimer.Start();}};button.Click+=(o,e)=>{if(!trayDragging&&gesture.Click())TrayAction((TrayMirror.IconItem)target.DataContext,"left",target);};button.MouseDoubleClick+=(o,e)=>{if(e.ChangedButton==MouseButton.Left&&!trayDragging){TrayAction((TrayMirror.IconItem)target.DataContext,"double",target);e.Handled=true;}};button.PreviewMouseRightButtonUp+=(o,e)=>{TrayAction((TrayMirror.IconItem)target.DataContext,"right",target);e.Handled=true;};button.PreviewMouseUp+=(o,e)=>{if(e.ChangedButton==MouseButton.Middle){TrayAction((TrayMirror.IconItem)target.DataContext,"middle",target);e.Handled=true;}};trayButtons[entry.Key]=button;}button.DataContext=entry;((Image)button.Content).Source=entry.Image;string tip=String.IsNullOrWhiteSpace(entry.Tip)?System.IO.Path.GetFileNameWithoutExtension(entry.Executable):entry.Tip;if(!Object.Equals(button.ToolTip,tip))button.ToolTip=tip;System.Windows.Automation.AutomationProperties.SetName(button,"托盘图标 "+tip);if(trayIcons.Children.IndexOf(button)!=index){trayIcons.Children.Remove(button);trayIcons.Children.Insert(index,button);}}trayState.Text=items.Count>0?"":trayMirror.Error==""?"暂无隐藏托盘图标":trayMirror.Error;Record();}catch(Exception ex){trayState.Text=ex.Message;}}
-
- void TrayAction(TrayMirror.IconItem item,string action,FrameworkElement button){if(trayDragging)return;try{if(trayMirror!=null)trayMirror.Action(item,action,button.PointToScreen(Mouse.GetPosition(button)));}catch(Exception ex){message.Text=ex.Message;}}
- public void Record(){try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"control-center-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),visible=IsVisible,window=Native.WidgetInfo(this),noMouseActivation=true,transitionsDisabledRequestAccepted=Native.TransitionsDisabledRequested(new WindowInteropHelper(this).Handle),glass=options.Glass,backdrop=backdrop.Info(),audio,brightness,battery=ControlHardware.Battery(),radios=radios.Select(r=>new{kind=r.Kind.ToString(),state=r.State.ToString()}).ToArray(),radioError,availableNetworks=networks.Count,wifiDisplayedCount,wifiScan=ControlWifi.LastScan,wifiError=ControlWifi.LastError,bluetoothDevices=bluetoothDevices.Select(d=>new{d.Name,d.Paired,d.Connected,d.LowEnergy,audioInterface=d.AudioId!=null}).ToArray(),card=new{options.X,options.Y,options.Visible},wirelessFlyout=flyout==null?null:flyout.Info(),trayMode="custom grid forwarding native Shell_NotifyIcon callbacks",customTray=trayMirror==null?null:trayMirror.Info(),trayOrder=options.TrayOrder,trayRendered=trayIcons.Children.OfType<Button>().Select(b=>b.DataContext as TrayMirror.IconItem).Where(i=>i!=null).Select(i=>new{id=TrayArrangement.Identity(i),i.Tip}).ToArray(),trayHover=new{strength=trayHoverAmount,active=trayHovered!=null,backdrop=trayHoverBackdrop==null?null:trayHoverBackdrop.Info()},powerPosition="bottom-left",runningApplications=dock.Apps.Windows.Select(w=>w.Executable).Distinct().Count(),scope="Real current-user hardware reads; no network password or chat content stored"}),Encoding.UTF8);}catch{}}
+ Button CreateTrayTile(string tag,EntryGesture gesture){
+  var button=TrayButton(new Image{Width=25,Height=25,Stretch=Stretch.Uniform});
+  button.Width=40;button.Height=40;button.Margin=new Thickness(2);button.Tag=tag;
+  WireTrayDrag(button,gesture);
+  button.MouseEnter+=(o,e)=>SetTrayHover(button);
+  button.MouseLeave+=(o,e)=>{if(trayHovered==button){CloseTrayTip();trayHoverTarget=0;trayHoverTimer.Start();}};
+  return button;
+ }
+ Button CreateNativeTrayTile(){
+  var gesture=new EntryGesture();
+  var button=CreateTrayTile("tray-native-icon",gesture);
+  button.Click+=(o,e)=>{if(gesture.Click())TrayAction(button,TrayModel.Operation.Left);};
+  button.MouseDoubleClick+=(o,e)=>{
+   if(e.ChangedButton!=MouseButton.Left||trayDragging)return;
+   gesture.Cancel();e.Handled=true;TrayAction(button,TrayModel.Operation.Double);
+  };
+  button.PreviewMouseRightButtonUp+=(o,e)=>{TrayAction(button,TrayModel.Operation.Right);e.Handled=true;};
+  button.PreviewMouseUp+=(o,e)=>{
+   if(e.ChangedButton!=MouseButton.Middle)return;
+   TrayAction(button,TrayModel.Operation.Middle);e.Handled=true;
+  };
+  return button;
+ }
+ async void RenderTray(){
+  var model=trayModel;
+  if(model==null||closing||!IsVisible||trayDragging||readingTray)return;
+  readingTray=true;
+  int epoch=trayEpoch;
+  try{
+   trayMirror.EnsureHook();
+   var snapshot=await System.Threading.Tasks.Task.Run(()=>model.Read());
+   if(!closing&&IsVisible&&!trayDragging&&epoch==trayEpoch)ApplyTraySnapshot(snapshot);
+  }catch(Exception ex){if(!closing&&epoch==trayEpoch)trayState.Text=ex.Message;}
+  finally{readingTray=false;}
+ }
+ void ApplyTraySnapshot(TrayModel.Snapshot snapshot){
+  var ids=new HashSet<string>(snapshot.Entries.Select(item=>item.Identity));
+  bool changed=trayButtons.Count!=snapshot.Entries.Count;
+  foreach(string key in trayButtons.Keys.Where(key=>!ids.Contains(key)).ToArray()){
+   var button=trayButtons[key];
+   if(trayHovered==button)ClearTrayHover();
+   trayIcons.Children.Remove(button);trayButtons.Remove(key);
+  }
+  for(int index=0;index<snapshot.Entries.Count;index++){
+   var entry=snapshot.Entries[index];
+   Button button;
+   if(!trayButtons.TryGetValue(entry.Identity,out button)){
+    button=CreateNativeTrayTile();trayButtons[entry.Identity]=button;changed=true;
+   }
+   button.DataContext=entry;
+   ToolTipService.SetIsEnabled(button,!entry.OwnsTip);
+   var image=(Image)button.Content;
+   if(image.Source!=entry.Image){image.Source=entry.Image;changed=true;}
+   if(!Object.Equals(button.ToolTip,entry.Tip)){
+    button.ToolTip=entry.Tip;
+    System.Windows.Automation.AutomationProperties.SetName(button,"托盘图标 "+entry.Tip);
+    changed=true;
+   }
+   if(trayIcons.Children.IndexOf(button)==index)continue;
+   trayIcons.Children.Remove(button);trayIcons.Children.Insert(index,button);changed=true;
+  }
+  string status=snapshot.Entries.Count==0?"暂无隐藏托盘图标":"";
+  if(trayState.Text!=status){trayState.Text=status;changed=true;}
+  if(changed)Record();
+ }
+ void TrayAction(Button button,TrayModel.Operation action){
+  if(trayDragging||trayModel==null)return;
+  try{
+   var cursor=Forms.Cursor.Position;
+   trayModel.Activate((TrayModel.Entry)button.DataContext,action,new Point(cursor.X,cursor.Y));
+  }catch(Exception ex){trayState.Text=ex.Message;}
+ }
+ void DisposeTray(){
+  trayPoll.Stop();CloseTrayTip();
+  if(trayModel!=null){trayModel.Dispose();trayModel=null;}
+  if(trayMirror!=null){trayMirror.Dispose();trayMirror=null;}
+ }
+ public void Record(){try{File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"control-center-state.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),visible=IsVisible,window=Native.WidgetInfo(this),noMouseActivation=true,transitionsDisabledRequestAccepted=Native.TransitionsDisabledRequested(new WindowInteropHelper(this).Handle),glass=options.Glass,backdrop=backdrop.Info(),audio,brightness,battery=ControlHardware.Battery(),radios=radios.Select(r=>new{kind=r.Kind.ToString(),state=r.State.ToString()}).ToArray(),radioError,availableNetworks=networks.Count,wifiDisplayedCount,wifiScan=ControlWifi.LastScan,wifiError=ControlWifi.LastError,bluetoothDevices=bluetoothDevices.Select(d=>new{d.Name,d.Paired,d.Connected,d.LowEnergy,audioInterface=d.AudioId!=null}).ToArray(),card=new{options.X,options.Y,options.Visible},wirelessFlyout=flyout==null?null:flyout.Info(),trayMode="Explorer live notification overflow model",trayStatus=trayState.Text,trayRendered=trayIcons.Children.OfType<Button>().Select(b=>new{id=TrayButtonId(b),Tip=(b.ToolTip as string??"").Split('\n')[0],image=((Image)b.Content).Source!=null}).Where(i=>i.id!=null).ToArray(),trayHover=new{strength=trayHoverAmount,active=trayHovered!=null,backdrop=trayHoverBackdrop==null?null:trayHoverBackdrop.Info()},powerPosition="bottom-left",runningApplications=dock.Apps.Windows.Select(w=>w.Executable).Distinct().Count(),scope="Real current-user hardware reads; no network password or chat content stored"}),Encoding.UTF8);}catch{}}
  public void ProbeSameValues(){var result=new Dictionary<string,object>();var initial=ControlAudio.Read();try{if(initial.Available){ControlAudio.SetVolume(initial.Volume);ControlAudio.SetMute(initial.Muted);result["audioReadback"]=ControlAudio.Read();}int? level=ControlHardware.Brightness();if(level.HasValue){ControlHardware.SetBrightness(level.Value);result["brightnessReadback"]=ControlHardware.Brightness();}result["outputs"]=ControlAudio.Outputs();result["outputSwitchInterfaceAvailable"]=ControlAudio.CanSwitchOutput();result["sameValuesOnly"]=true;result["radiosNotToggled"]=true;}catch(Exception ex){result["error"]=ex.ToString();}File.WriteAllText(System.IO.Path.Combine(Program.S.Root,"control-hardware-write-check.json"),new JavaScriptSerializer().Serialize(result),Encoding.UTF8);}
 }
 public static class AppearanceProbe {
@@ -1154,6 +2113,7 @@ public static class Tests {
   box.Undo();check("撤销拖入保留源文件且恢复入口",s.Data.Items.Count==before&&File.Exists(routeFile));
   box.Hide();box.Reveal();check("隐藏后可重新显示",box.IsVisible);box.Render();
   var panelOrder=s.Data.Items.Select(item=>item.Id).ToArray();var dockOrder=s.Data.DockPins.ToArray();box.ReorderPanel(panelOrder[0],panelOrder.Length);check("面板向后拖到末尾能保存实际新顺序",s.Data.Items.Last().Id==panelOrder[0]&&new Store(s.Root).Data.Items.Last().Id==panelOrder[0]&&s.Data.DockPins.SequenceEqual(dockOrder));box.ReorderPanel(panelOrder[0],panelOrder.Length);box.Undo();check("面板排序可撤销且原位放下不产生多余撤销",s.Data.Items.Select(item=>item.Id).SequenceEqual(panelOrder));box.UpdateLayout();var panelWrap=(WrapPanel)((Grid)box.FilesScroll.Content).Children[0];var panelButtons=panelWrap.Children.OfType<Button>().ToArray();var startPoint=panelButtons[0].TranslatePoint(new Point(1,panelButtons[0].ActualHeight/2),panelWrap);var endPoint=panelButtons.Last().TranslatePoint(new Point(panelButtons.Last().ActualWidth-1,panelButtons.Last().ActualHeight/2),panelWrap);check("实际图标左右半区和列表空白可识别插入位置",box.PanelInsertionSlot(startPoint)==0&&box.PanelInsertionSlot(endPoint)==panelButtons.Length&&box.PanelInsertionSlot(new Point(10,panelWrap.ActualHeight+80))==panelButtons.Length);
+  await box.VerifyPanelSortMotion(check);
   var orderStore=new Store(System.IO.Path.Combine(s.Root,"排序分组隔离"));orderStore.Data.Groups.Add(new Group{Id="other",Name="其他"});foreach(string id in new[]{"a","x","b","y","c"})orderStore.Data.Items.Add(new Item{Id=id,Name=id,Path=file,Group=id=="x"||id=="y"?"other":"inbox"});orderStore.Data.DockPins=new List<string>{"c","a"};orderStore.Data.Active="inbox";orderStore.Save();orderStore.ReorderInView("a",new[]{"a","b","c"},3);check("分组内向后排序保留其他分组及独立底栏顺序",orderStore.Filter("").Select(item=>item.Id).SequenceEqual(new[]{"b","c","a"})&&orderStore.Data.Items.Where(item=>item.Group=="other").Select(item=>item.Id).SequenceEqual(new[]{"x","y"})&&new Store(orderStore.Root).Data.DockPins.SequenceEqual(new[]{"c","a"}));orderStore.ReorderInView("a",new[]{"b","c","a"},0);orderStore.ReorderInView("c",new[]{"a","c"},0);check("向前及筛选结果排序保留全部入口和分组",orderStore.Filter("").Select(item=>item.Id).SequenceEqual(new[]{"c","a","b"})&&orderStore.Data.Items.Count==5&&orderStore.Data.Items.Count(item=>item.Group=="other")==2);
   var screen=Forms.Screen.FromHandle(new WindowInteropHelper(box).Handle);var matrix=PresentationSource.FromVisual(box).CompositionTarget.TransformToDevice;double scale=matrix.M11;var dock=box.Dock;dock.ApplyLayout();dock.UpdateLayout();check("底栏小于原宽度且保持底部居中",dock.Width<500&&Math.Abs((dock.Left+dock.Width/2)*scale-(screen.WorkingArea.Left+screen.WorkingArea.Width/2.0))<3&&dock.Top*scale+dock.Height*scale<=screen.WorkingArea.Bottom);
   var payload=new KeyEventArgs(Keyboard.PrimaryDevice,PresentationSource.FromVisual(box),0,Key.Escape){RoutedEvent=Keyboard.PreviewKeyDownEvent};box.RaiseEvent(payload);check("Esc事件收起面板且底栏保留",!box.IsVisible&&dock.IsVisible&&payload.Handled);
@@ -1193,7 +2153,7 @@ public static class Tests {
   double widgetLeft=widget.Left,widgetTop=widget.Top;widget.Left-=42;widget.Top+=27;widget.SavePosition();var widgetSaved=new Store(s.Root).Data;widget.Hide();widget.Reveal();check("状态挂件拖动位置保存并在重开后保留",Math.Abs(widget.Left-widgetSaved.StatusX)<1&&Math.Abs(widget.Top-widgetSaved.StatusY)<1);s.Data.StatusX=s.Data.StatusY=-99999;widget.ApplyLayout();
   var widgetMenu=widget.Menu();var secondsOption=(MenuItem)widgetMenu.Items[0];secondsOption.IsChecked=true;secondsOption.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));check("状态时钟支持显示秒钟并保存",new Store(s.Root).Data.StatusSeconds&&AppearanceProbe.Visuals<TextBlock>(widget).Any(text=>text.Text==DateTime.Now.ToString("HH:mm:ss")));secondsOption.IsChecked=false;secondsOption.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
   var meterCpu=new CpuMeter();meterCpu.Read();using(var meterGpu=new GpuMeter()){meterGpu.Read();await System.Threading.Tasks.Task.Delay(1700);double? cpuReading=meterCpu.Read(),gpuReading=meterGpu.Read();check("CPU真实采样读数有效且在百分比范围内",cpuReading.HasValue&&cpuReading>=0&&cpuReading<=100);check("GPU真实采样或明确不可用状态而非伪造零值",gpuReading.HasValue?gpuReading>=0&&gpuReading<=100&&meterGpu.Instances>0:!String.IsNullOrEmpty(meterGpu.Error));File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"系统计数器实测.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),cpu=cpuReading,gpu=gpuReading,instances=meterGpu.Instances,engine=meterGpu.Engine,error=meterGpu.Error,cpuSource="GetSystemTimes差值",gpuSource=@"PDH \GPU Engine(*)\Utilization Percentage"}),Encoding.UTF8);}
-  check("无帧率数据源时明确显示N/A",widget.Latest.Cpu==null&&AppearanceProbe.Visuals<TextBlock>(widget).Count(text=>text.Text=="N/A")>=3);FrostSkin.Capture(widget,System.IO.Path.Combine(Program.OutDir,"状态挂件布局.png"));var widgetPixels=new FormatConvertedBitmap(new BitmapImage(new Uri(System.IO.Path.Combine(Program.OutDir,"状态挂件布局.png"))),PixelFormats.Bgra32,null,0);var widgetBlank=new byte[4];var widgetCorner=new byte[4];widgetPixels.CopyPixels(new Int32Rect(230,160,1,1),widgetBlank,4,0);widgetPixels.CopyPixels(new Int32Rect(0,0,1,1),widgetCorner,4,0);check("状态挂件背景低透明度且圆角外完全透明",widgetBlank[3]>0&&widgetBlank[3]<50&&widgetCorner[3]==0);widget.WriteState();s.Save();
+  var liveMetrics=AppearanceProbe.Visuals<Grid>(widget).Single(grid=>Object.Equals(grid.Tag,"clock-live-metrics"));check("时钟常驻网速、显卡温度和CPU及GPU占用且移除桌面帧率",liveMetrics.IsVisible&&liveMetrics.Children.OfType<StackPanel>().Select(column=>((TextBlock)column.Children[0]).Text).SequenceEqual(new[]{"实时网速","GPU 温度","CPU","GPU"}));FrostSkin.Capture(widget,System.IO.Path.Combine(Program.OutDir,"状态挂件布局.png"));var widgetPixels=new FormatConvertedBitmap(new BitmapImage(new Uri(System.IO.Path.Combine(Program.OutDir,"状态挂件布局.png"))),PixelFormats.Bgra32,null,0);var widgetBlank=new byte[4];var widgetCorner=new byte[4];widgetPixels.CopyPixels(new Int32Rect(230,160,1,1),widgetBlank,4,0);widgetPixels.CopyPixels(new Int32Rect(0,0,1,1),widgetCorner,4,0);check("状态挂件背景低透明度且圆角外完全透明",widgetBlank[3]>0&&widgetBlank[3]<50&&widgetCorner[3]==0);widget.WriteState();s.Save();
   bool glassIdentities=true;foreach(string launcher in CodexActivation.GlassLaunchers()){string alias=System.IO.Path.Combine(s.Root,"Codex别名-"+Guid.NewGuid().ToString("N")+".lnk");Native.CreateShortcut(alias,launcher,"");glassIdentities&=CodexActivation.MatchesIdentity(launcher+"|")&&CodexActivation.IsEntry(alias);}check("两种已知磨砂启动器快捷方式均识别为Codex",glassIdentities);check("同名任意程序和文本不误认为Codex",!CodexActivation.MatchesIdentity(@"C:\Temp\CodexGlassEntry.exe|")&&!CodexActivation.MatchesIdentity(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CodexNativeGlass","CodexGlassEntry.exe.txt"))&&!CodexActivation.IsEntry(file));check("官方AppID入口仍保持兼容",CodexActivation.MatchesIdentity(CodexActivation.AppId+"|"));check("底栏按钮使用不依赖键盘焦点的鼠标释放路径",AppearanceProbe.Visuals<Button>(dock).All(button=>button is DockClickButton));
   var gestureCheck=new EntryGesture();gestureCheck.Press(new Point(10,10),1);check("单击在松开Click阶段可打开且微小抖动不触发拖动",!gestureCheck.Move(new Point(11,11))&&gestureCheck.Click());gestureCheck.Press(new Point(10,10),1);check("拖动达到阈值后取消打开且只启动一次拖动",gestureCheck.Move(new Point(60,10))&&!gestureCheck.Click()&&!gestureCheck.Move(new Point(80,10)));gestureCheck.Press(new Point(10,10),2);check("双击的第二次按下不重复打开应用",!gestureCheck.Click());gestureCheck.Press(new Point(10,10),1);check("拖动后新的独立单击仍可正常打开",gestureCheck.Click());
   box.Render();box.UpdateLayout();var motionNodes=box.EntryMotion.Nodes;var positions=motionNodes.Select(n=>n.Button.TranslatePoint(new Point(),box)).ToArray();var sizes=motionNodes.Select(n=>n.Button.RenderSize).ToArray();var panelStart=box.EntryMotion.Preview(0,1);var panelPeak=box.EntryMotion.Preview(0,40);check("面板悬停仅当前图标平滑放大",panelPeak.Length>1&&panelStart[0]>1&&panelStart[0]<panelPeak[0]&&panelPeak[0]>1.37&&panelPeak.Skip(1).All(value=>value==1));check("面板悬停不改变任何图标的布局位置和按钮尺寸",motionNodes.Select((n,i)=>n.Button.TranslatePoint(new Point(),box)==positions[i]&&n.Button.RenderSize==sizes[i]).All(value=>value));box.Capture(System.IO.Path.Combine(Program.OutDir,"面板单图标悬停目标态.png"));var panelSwitch=box.EntryMotion.Preview(1,1);check("面板切换悬停时前一个立即复原且其余不动",panelSwitch[0]==1&&panelSwitch[1]>1&&panelSwitch.Skip(2).All(value=>value==1));var panelReturn=box.EntryMotion.Preview(-1,1);var panelRestored=box.EntryMotion.Preview(-1,60);check("面板移开鼠标后平滑还原图标",panelReturn[1]>1&&panelReturn[1]<panelSwitch[1]&&panelRestored.All(value=>value==1));
@@ -1215,7 +2175,7 @@ public static class Tests {
   dock.Apps.Update(new List<AppWindow>{new AppWindow{Handle=new IntPtr(201),Executable=@"C:\rushbin-fixture\first.exe",Title="first"},new AppWindow{Handle=new IntPtr(202),Executable=@"C:\rushbin-fixture\second.exe",Title="second"}});dock.Render();dock.UpdateLayout();double runningWidth=dock.Width;var dynamicFirst=dock.DynamicItems[0];var dynamicSecond=dock.DynamicItems[1];check("临时应用可独立排序且不被自动固定",dock.ReorderDock(dynamicFirst.Id,dynamicSecond.Id,true)&&dock.DynamicItems[0].Path==dynamicSecond.Path&&s.Data.DockPins.Count==1&&new Store(s.Root).Data.DockRunningOrder.Last()==dynamicFirst.Path);dock.Apps.Update(new List<AppWindow>());dock.Render();dock.UpdateLayout();check("应用退出自动缩窄且新增应用自动变宽",fourWidth>oneWidth&&runningWidth>oneWidth&&Math.Abs(dock.Width-oneWidth)<1);dock.Apps.Update(new List<AppWindow>{new AppWindow{Handle=new IntPtr(201),Executable=dynamicFirst.Path},new AppWindow{Handle=new IntPtr(202),Executable=dynamicSecond.Path}});dock.Render();check("临时应用重开恢复已保存顺序",dock.DynamicItems[0].Path==dynamicSecond.Path);
   s.Data.DockPins.Clear();dock.Apps.Update(new List<AppWindow>());dock.Render();dock.UpdateLayout();check("零应用仅保留开始图标且宽度最小",dock.Width<oneWidth&&AppearanceProbe.Visuals<DockClickButton>(dock).Count()==1);s.Data.DockPins=sortFixtures.Select(item=>item.Id).ToList();for(int i=0;i<160;i++){var overflowItem=new Item{Id="dock-overflow-"+i,Path=exe,Name="overflow"};s.Data.Items.Add(overflowItem);s.Data.DockPins.Add(overflowItem.Id);}dock.Render();dock.UpdateLayout();check("大量应用不超出屏幕且仍可滚轮浏览",dock.Width<=screen.WorkingArea.Width/scale&&AppearanceProbe.Visuals<DockClickButton>(dock).Count()<s.Data.DockPins.Count);
   File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"底栏自适应尺寸.json"),new JavaScriptSerializer().Serialize(new{oneWidth,fourWidth,runningWidth,overflowWidth=dock.Width,source="Actual WPF dock layout in isolated fixtures; shared reorder handler and serialized Store reload. No physical mouse drag asserted."}),Encoding.UTF8);s.Data.Items=savedAutoItems;s.Data.DockPins=savedAutoPins;s.Data.DockRunningOrder=savedRunningOrder;dock.Apps.Update(new List<AppWindow>());s.Save();dock.Render();
-  var glassShared=new Border();ControlGlassStyle.Paint(glassShared,0);check("时钟与控制中心共用清透玻璃且无额外色罩",((LinearGradientBrush)glassShared.Background).GradientStops.All(g=>g.Color.A==1)&&((SolidColorBrush)glassShared.BorderBrush).Color.A==150);ControlGlassStyle.Paint(glassShared,1);check("共用玻璃样式保留磨砂端点渐变",((LinearGradientBrush)glassShared.Background).GradientStops.Select(g=>g.Color.A).SequenceEqual(new byte[]{33,47})&&((SolidColorBrush)glassShared.BorderBrush).Color.A==65);var powerTrayFixture=new TrayMirror.IconItem{Guid=new Guid("7820ae75-23e3-4229-82c1-e41cb67d5b9c"),Executable=@"C:\Windows\explorer.exe"};check("托盘网格精确排除Explorer重复电源入口",TrayRecovery.DuplicatePower(powerTrayFixture));powerTrayFixture.Executable=@"C:\Apps\battery.exe";check("第三方电池应用不按图案误删",!TrayRecovery.DuplicatePower(powerTrayFixture));check("未知托盘身份不能作为实时图标恢复",!TrayRecovery.Live(new TrayMirror.IconItem{Guid=Guid.NewGuid()}));var traySortMaster=new[]{"A","B","offline","C","D"};var traySortVisible=new[]{"A","B","C","D"};check("托盘向后排序按目标后侧插入且保留离线位置",TrayArrangement.Move(traySortMaster,traySortVisible,"A","C",true).SequenceEqual(new[]{"B","offline","C","A","D"}));check("托盘向前排序按目标前侧插入",TrayArrangement.Move(traySortMaster,traySortVisible,"D","B",false).SequenceEqual(new[]{"A","D","B","offline","C"}));check("托盘排序配置去重并接受旧版空配置",TrayArrangement.Normalize(new[]{"A",null,"a","","B"}).SequenceEqual(new[]{"A","B"})&&TrayArrangement.Normalize(null).Count==0);var traySortFixtureA=new TrayMirror.IconItem{Executable=@"C:\Apps\Example\app.exe",Id=1,Key="w:1|1",Window=new IntPtr(1)};var traySortFixtureB=new TrayMirror.IconItem{Executable=@"c:\apps\example\APP.EXE",Id=1,Key="w:99|1",Window=new IntPtr(99)};check("托盘稳定身份跨窗口句柄及路径大小写变化保留",TrayArrangement.Identity(traySortFixtureA)==TrayArrangement.Identity(traySortFixtureB));var traySortFixtureC=new TrayMirror.IconItem{Executable=traySortFixtureA.Executable,Id=2,Key="w:1|2"};check("同一应用的不同托盘图标保持独立顺序",TrayArrangement.Identity(traySortFixtureA)!=TrayArrangement.Identity(traySortFixtureC));Guid traySortGuid=Guid.NewGuid();var traySortFixtureG=new TrayMirror.IconItem{Guid=traySortGuid,Executable="old.exe"};var traySortFixtureG2=new TrayMirror.IconItem{Guid=traySortGuid,Executable="updated.exe"};check("托盘GUID身份不受程序路径更新影响",TrayArrangement.Identity(traySortFixtureG)==TrayArrangement.Identity(traySortFixtureG2));check("托盘按保存顺序恢复且新图标追加末尾",TrayArrangement.Apply(new[]{traySortFixtureA,traySortFixtureG,traySortFixtureC},new[]{TrayArrangement.Identity(traySortFixtureC),TrayArrangement.Identity(traySortFixtureA)}).SequenceEqual(new[]{traySortFixtureC,traySortFixtureA,traySortFixtureG}));byte[] blackPixels={0,0,0,255,0,0,0,128,0,0,0,0,0,0,0,32};var blackBitmap=BitmapSource.Create(2,2,96,96,PixelFormats.Bgra32,null,blackPixels,8);bool whiteChanged;var lightBitmap=TrayArtwork.Lighten(blackBitmap,out whiteChanged);var lightPixels=new byte[16];lightBitmap.CopyPixels(lightPixels,8,0);check("纯黑托盘图标转白且保留透明度和透明背景",whiteChanged&&lightPixels[0]==255&&lightPixels[1]==255&&lightPixels[2]==255&&lightPixels[3]==255&&lightPixels[7]==128&&lightPixels[11]==0&&lightPixels[15]==32);byte[] colourPixels={0,160,240,255};var colourBitmap=BitmapSource.Create(1,1,96,96,PixelFormats.Bgra32,null,colourPixels,4);bool colourChanged;var sameColour=TrayArtwork.Lighten(colourBitmap,out colourChanged);check("彩色托盘图标保留原始颜色",!colourChanged&&Object.ReferenceEquals(sameColour,colourBitmap));var emptyBitmap=BitmapSource.Create(1,1,96,96,PixelFormats.Bgra32,null,new byte[4],4);bool emptyChanged;TrayArtwork.Lighten(emptyBitmap,out emptyChanged);check("全透明图标不误判为纯黑图标",!emptyChanged);var callback4=TrayMirror.CallbackParameters(4321,4,0x7b,-20,456);var callbackOld=TrayMirror.CallbackParameters(4321,0,0x205,-20,456);check("托盘版本4回调保留图标ID和屏幕坐标",callback4[0].ToInt64()==unchecked((long)(uint)((456u<<16)|(ushort)(short)-20))&&callback4[1].ToInt64()==((4321L<<16)|0x7b));check("传统托盘回调使用完整ID和鼠标消息",callbackOld[0].ToInt64()==4321&&callbackOld[1].ToInt64()==0x205);double mainGlassBefore=s.Data.PanelGlass;var center=new ControlCenter(box,dock);center.Reveal();center.UpdateLayout();check("控制中心底部提供任务管理器入口",AppearanceProbe.Visuals<Button>(center).Any(button=>Object.Equals(button.Tag,"open-task-manager")&&Object.Equals(button.Content,"任务管理器"))&&File.Exists(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"Taskmgr.exe")));check("控制中心提供独立清透玻璃滑条及音量亮度范围",center.GlassSlider.Value==0&&center.GlassSlider.Maximum==100&&center.VolumeSlider.Minimum==0&&center.VolumeSlider.Maximum==100&&center.BrightnessSlider.Maximum==100);center.GlassSlider.Value=37;await System.Threading.Tasks.Task.Delay(430);var centerOptions=new JavaScriptSerializer().Deserialize<ControlCenter.Options>(File.ReadAllText(System.IO.Path.Combine(s.Root,"control-center.json")));check("控制中心玻璃单独保存不修改收纳面板材质",centerOptions.Glass==37&&s.Data.PanelGlass==mainGlassBefore);center.Left=80;center.Top=90;center.SavePosition();center.HideCard();var savedCard=new JavaScriptSerializer().Deserialize<ControlCenter.Options>(File.ReadAllText(System.IO.Path.Combine(s.Root,"control-center.json")));check("独立卡片保存位置与隐藏状态",savedCard.X==80&&savedCard.Y==90&&!savedCard.Visible);center.Reveal();check("独立卡片仍在桌面层且不进入任务切换",!center.Topmost&&!center.ShowInTaskbar&&Native.ToolWindow(center));var controlCover=new Window{Title="控制中心层级验收",WindowStyle=WindowStyle.None,Left=screen.Bounds.Left/scale,Top=screen.Bounds.Top/scale,Width=screen.Bounds.Width/scale,Height=screen.Bounds.Height/scale,ShowInTaskbar=false};controlCover.Show();Native.LowerToDesktop(center);check("普通全屏窗口能够覆盖独立控制中心",Native.Above(controlCover,center)&&!center.Topmost&&Native.IndependentWidget(center));controlCover.Close();check("无线开关和详情按钮采用分段控件",AppearanceProbe.Visuals<Button>(center).Count(button=>new[]{"wifi-toggle","bluetooth-toggle","wifi-details","bluetooth-details"}.Contains(button.Tag as string))==4);double controlHeight=center.ActualHeight;var details=center.Details("Wi-Fi 网络");details.Children.Add(new TextBlock{Text="隔离浮出面板验收"});center.UpdateLayout();check("无线列表为独立工具浮窗且不拉长控制中心",center.WirelessFlyout.IsVisible&&new WindowInteropHelper(center.WirelessFlyout).Handle!=new WindowInteropHelper(center).Handle&&!center.WirelessFlyout.ShowInTaskbar&&Native.ToolWindow(center.WirelessFlyout)&&Math.Abs(center.ActualHeight-controlHeight)<1);center.WirelessFlyout.Dismiss();check("关闭无线浮窗保留原控制中心",center.IsVisible&&!center.WirelessFlyout.IsVisible);check("控制中心自绘托盘位于玻璃滑条下方且不再显示运行应用",center.TrayHost.Tag.ToString()=="system-hidden-tray"&&center.TrayHost.TranslatePoint(new Point(),center).Y>center.GlassSlider.TranslatePoint(new Point(),center).Y&&!AppearanceProbe.Visuals<TextBlock>(center).Any(text=>text.Text=="已打开的应用"));check("电源图标处于玻璃滑条下方左侧",center.BatteryIcon.Source!=null&&center.BatteryFooter.TranslatePoint(new Point(),center).Y>center.GlassSlider.TranslatePoint(new Point(),center).Y);var batterySamples=new DrawingVisual();using(var dc=batterySamples.RenderOpen()){dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(35,48,58)),null,new Rect(0,0,420,66));double[] levels={.1,.3,.8,1};for(int n=0;n<levels.Length;n++){dc.DrawImage(BatteryVisual.Create(levels[n],n==3,true),new Rect(13+n*104,10,47,28));dc.DrawText(new FormattedText((levels[n]*100).ToString("0")+"%"+(n==3?" 充电":""),System.Globalization.CultureInfo.InvariantCulture,FlowDirection.LeftToRight,new Typeface("Microsoft YaHei UI"),12,Brushes.White,1),new Point(10+n*104,44));}}var batteryBitmap=new RenderTargetBitmap(420,66,96,96,PixelFormats.Pbgra32);batteryBitmap.Render(batterySamples);var batteryPixels=new byte[420*66*4];batteryBitmap.CopyPixels(batteryPixels,420*4,0);bool red=false,amber=false,green=false;for(int n=0;n<batteryPixels.Length;n+=4){red|=batteryPixels[n+2]>180&&batteryPixels[n+1]<130;amber|=batteryPixels[n+2]>180&&batteryPixels[n+1]>140&&batteryPixels[n]<110;green|=batteryPixels[n+1]>150&&batteryPixels[n+2]<150;}check("电池绘制按低中高电量区分颜色并提供充电示例",red&&amber&&green);var batteryEncoder=new PngBitmapEncoder();batteryEncoder.Frames.Add(BitmapFrame.Create(batteryBitmap));using(var stream=File.Create(System.IO.Path.Combine(Program.OutDir,"电池状态绘制样例.png")))batteryEncoder.Save(stream);center.Hide();var otherCenter=new ControlCenter(box,dock);check("控制中心重新创建恢复上次玻璃数值",otherCenter.GlassSlider.Value==37);otherCenter.Close();center.Close();check("底栏移除控制中心按钮且设置保留入口",!AppearanceProbe.Visuals<Button>(dock).Any(button=>Object.Equals(button.Tag,"control-center"))&&box.SettingsMenu().Items.OfType<MenuItem>().Any(item=>Object.Equals(item.Header,"控制中心"))&&dock.LauncherExcluded());var actualAudio=ControlAudio.Read();check("控制中心读取真实音频或明确设备不可用",actualAudio.Available?actualAudio.Volume>=0&&actualAudio.Volume<=100&&!String.IsNullOrWhiteSpace(actualAudio.Id):!String.IsNullOrWhiteSpace(actualAudio.Error));check("控制中心音频输出列表包含实际默认设备",!actualAudio.Available||ControlAudio.Outputs().Any(output=>output.Id==actualAudio.Id));var wifiSameA=new ControlWifi.Available{Name="same",SsidBytes=new byte[]{115,97,109,101},Auth=7,Cipher=4,Secured=true,Signal=80};var wifiSameB=new ControlWifi.Available{Name="same",SsidBytes=wifiSameA.SsidBytes,Auth=7,Cipher=4,Secured=true,Signal=30,Connected=true};var wifiOpen=new ControlWifi.Available{Name="same",SsidBytes=wifiSameA.SsidBytes,Auth=1,Cipher=0,Secured=false,Signal=90};check("同名但不同安全类型的无线网络不会被错误合并",ControlWifi.DistinctNetworks(new[]{wifiSameA,wifiOpen}).Count==2);check("同网络多个接口优先保留已连接的入口",Object.ReferenceEquals(ControlWifi.DistinctNetworks(new[]{wifiSameA,wifiSameB})[0],wifiSameB));var wifiOtherBytes=new ControlWifi.Available{Name="same",SsidBytes=new byte[]{115,97,109,102},Auth=7,Cipher=4,Secured=true,Signal=20};check("无线网络身份按原始SSID字节区分",ControlWifi.DistinctNetworks(new[]{wifiSameA,wifiOtherBytes}).Count==2);var sample=new ControlWifi.Available{Name="sample<&网络",Auth=7,Cipher=4,Secured=true};string xml=ControlWifi.ProfileXml(sample,"sample<&pass",false);check("无线临时配置转义名称及密码且不自动保存",xml.Contains("sample&lt;&amp;网络")&&xml.Contains("sample&lt;&amp;pass")&&xml.Contains("<connectionMode>manual</connectionMode>"));sample.Secured=false;xml=ControlWifi.ProfileXml(sample,"",true);check("开放网络不生成共享密码且记住模式自动连接",!xml.Contains("sharedKey")&&xml.Contains("<connectionMode>auto</connectionMode>"));sample.Secured=true;sample.Auth=6;bool wifiRejected=false;try{ControlWifi.ProfileXml(sample,"sample-pass",false);}catch(InvalidOperationException){wifiRejected=true;}check("未知企业认证拒绝伪造个人无线配置",wifiRejected);int? actualBrightness=ControlHardware.Brightness();check("控制中心亮度源真实有效或明确不支持",!actualBrightness.HasValue||actualBrightness.Value>=0&&actualBrightness.Value<=100);
+  var glassShared=new Border();ControlGlassStyle.Paint(glassShared,0);check("时钟与控制中心共用清透玻璃且无额外色罩",((LinearGradientBrush)glassShared.Background).GradientStops.All(g=>g.Color.A==1)&&((SolidColorBrush)glassShared.BorderBrush).Color.A==150);ControlGlassStyle.Paint(glassShared,1);check("共用玻璃样式保留磨砂端点渐变",((LinearGradientBrush)glassShared.Background).GradientStops.Select(g=>g.Color.A).SequenceEqual(new byte[]{33,47})&&((SolidColorBrush)glassShared.BorderBrush).Color.A==65);var powerTrayFixture=new TrayMirror.IconItem{Guid=new Guid("7820ae75-23e3-4229-82c1-e41cb67d5b9c"),Executable=@"C:\Windows\explorer.exe"};check("托盘网格精确排除Explorer重复电源入口",TrayRecovery.DuplicatePower(powerTrayFixture));powerTrayFixture.Executable=@"C:\Apps\battery.exe";check("第三方电池应用不按图案误删",!TrayRecovery.DuplicatePower(powerTrayFixture));check("未知托盘身份不能作为实时图标恢复",!TrayRecovery.Live(new TrayMirror.IconItem{Guid=Guid.NewGuid()}));var traySortMaster=new[]{"A","B","offline","C","D"};var traySortVisible=new[]{"A","B","C","D"};check("托盘向后排序按目标后侧插入且保留离线位置",TrayArrangement.Move(traySortMaster,traySortVisible,"A","C",true).SequenceEqual(new[]{"B","offline","C","A","D"}));check("托盘向前排序按目标前侧插入",TrayArrangement.Move(traySortMaster,traySortVisible,"D","B",false).SequenceEqual(new[]{"A","D","B","offline","C"}));check("托盘排序配置去重并接受旧版空配置",TrayArrangement.Normalize(new[]{"A",null,"a","","B"}).SequenceEqual(new[]{"A","B"})&&TrayArrangement.Normalize(null).Count==0);var traySortFixtureA=new TrayMirror.IconItem{Executable=@"C:\Apps\Example\app.exe",Id=1,Key="w:1|1",Window=new IntPtr(1)};var traySortFixtureB=new TrayMirror.IconItem{Executable=@"c:\apps\example\APP.EXE",Id=1,Key="w:99|1",Window=new IntPtr(99)};check("托盘稳定身份跨窗口句柄及路径大小写变化保留",TrayArrangement.Identity(traySortFixtureA)==TrayArrangement.Identity(traySortFixtureB));var traySortFixtureC=new TrayMirror.IconItem{Executable=traySortFixtureA.Executable,Id=2,Key="w:1|2"};check("同一应用的不同托盘图标保持独立顺序",TrayArrangement.Identity(traySortFixtureA)!=TrayArrangement.Identity(traySortFixtureC));Guid traySortGuid=Guid.NewGuid();var traySortFixtureG=new TrayMirror.IconItem{Guid=traySortGuid,Executable="old.exe"};var traySortFixtureG2=new TrayMirror.IconItem{Guid=traySortGuid,Executable="updated.exe"};check("托盘GUID身份不受程序路径更新影响",TrayArrangement.Identity(traySortFixtureG)==TrayArrangement.Identity(traySortFixtureG2));check("托盘按保存顺序恢复且新图标追加末尾",TrayArrangement.Apply(new[]{traySortFixtureA,traySortFixtureG,traySortFixtureC},new[]{TrayArrangement.Identity(traySortFixtureC),TrayArrangement.Identity(traySortFixtureA)}).SequenceEqual(new[]{traySortFixtureC,traySortFixtureA,traySortFixtureG}));byte[] blackPixels={0,0,0,255,0,0,0,128,0,0,0,0,0,0,0,32};var blackBitmap=BitmapSource.Create(2,2,96,96,PixelFormats.Bgra32,null,blackPixels,8);bool whiteChanged;var lightBitmap=TrayArtwork.Lighten(blackBitmap,out whiteChanged);var lightPixels=new byte[16];lightBitmap.CopyPixels(lightPixels,8,0);check("纯黑托盘图标转白且保留透明度和透明背景",whiteChanged&&lightPixels[0]==255&&lightPixels[1]==255&&lightPixels[2]==255&&lightPixels[3]==255&&lightPixels[7]==128&&lightPixels[11]==0&&lightPixels[15]==32);byte[] colourPixels={0,160,240,255};var colourBitmap=BitmapSource.Create(1,1,96,96,PixelFormats.Bgra32,null,colourPixels,4);bool colourChanged;var sameColour=TrayArtwork.Lighten(colourBitmap,out colourChanged);check("彩色托盘图标保留原始颜色",!colourChanged&&Object.ReferenceEquals(sameColour,colourBitmap));var emptyBitmap=BitmapSource.Create(1,1,96,96,PixelFormats.Bgra32,null,new byte[4],4);bool emptyChanged;TrayArtwork.Lighten(emptyBitmap,out emptyChanged);check("全透明图标不误判为纯黑图标",!emptyChanged);var callback4=TrayMirror.CallbackParameters(4321,4,0x7b,-20,456);var callbackOld=TrayMirror.CallbackParameters(4321,0,0x205,-20,456);check("托盘版本4回调保留图标ID和屏幕坐标",callback4[0].ToInt64()==unchecked((long)(uint)((456u<<16)|(ushort)(short)-20))&&callback4[1].ToInt64()==((4321L<<16)|0x7b));check("传统托盘回调使用完整ID和鼠标消息",callbackOld[0].ToInt64()==4321&&callbackOld[1].ToInt64()==0x205);double mainGlassBefore=s.Data.PanelGlass;var center=new ControlCenter(box,dock);center.Reveal();center.UpdateLayout();check("控制中心底部提供任务管理器入口",AppearanceProbe.Visuals<Button>(center).Any(button=>Object.Equals(button.Tag,"open-task-manager")&&Object.Equals(button.Content,"任务管理器"))&&File.Exists(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"Taskmgr.exe")));check("控制中心提供独立清透玻璃滑条及音量亮度范围",center.GlassSlider.Value==0&&center.GlassSlider.Maximum==100&&center.VolumeSlider.Minimum==0&&center.VolumeSlider.Maximum==100&&center.BrightnessSlider.Maximum==100);center.GlassSlider.Value=37;await System.Threading.Tasks.Task.Delay(430);var centerOptions=new JavaScriptSerializer().Deserialize<ControlCenter.Options>(File.ReadAllText(System.IO.Path.Combine(s.Root,"control-center.json")));check("控制中心玻璃单独保存不修改收纳面板材质",centerOptions.Glass==37&&s.Data.PanelGlass==mainGlassBefore);center.Left=80;center.Top=90;center.SavePosition();center.HideCard();var savedCard=new JavaScriptSerializer().Deserialize<ControlCenter.Options>(File.ReadAllText(System.IO.Path.Combine(s.Root,"control-center.json")));check("独立卡片保存位置与隐藏状态",savedCard.X==80&&savedCard.Y==90&&!savedCard.Visible);center.Reveal();check("独立卡片仍在桌面层且不进入任务切换",!center.Topmost&&!center.ShowInTaskbar&&Native.ToolWindow(center));var controlCover=new Window{Title="控制中心层级验收",WindowStyle=WindowStyle.None,Left=screen.Bounds.Left/scale,Top=screen.Bounds.Top/scale,Width=screen.Bounds.Width/scale,Height=screen.Bounds.Height/scale,ShowInTaskbar=false};controlCover.Show();Native.LowerToDesktop(center);check("普通全屏窗口能够覆盖独立控制中心",Native.Above(controlCover,center)&&!center.Topmost&&Native.IndependentWidget(center));controlCover.Close();check("无线开关和详情按钮采用分段控件",AppearanceProbe.Visuals<Button>(center).Count(button=>new[]{"wifi-toggle","bluetooth-toggle","wifi-details","bluetooth-details"}.Contains(button.Tag as string))==4);double controlHeight=center.ActualHeight;var details=center.Details("Wi-Fi 网络");details.Children.Add(new TextBlock{Text="隔离浮出面板验收"});center.UpdateLayout();check("无线列表为独立工具浮窗且不拉长控制中心",center.WirelessFlyout.IsVisible&&new WindowInteropHelper(center.WirelessFlyout).Handle!=new WindowInteropHelper(center).Handle&&!center.WirelessFlyout.ShowInTaskbar&&Native.ToolWindow(center.WirelessFlyout)&&Math.Abs(center.ActualHeight-controlHeight)<1);center.WirelessFlyout.Dismiss();check("关闭无线浮窗保留原控制中心",center.IsVisible&&!center.WirelessFlyout.IsVisible);check("控制中心原生托盘图标区位于玻璃滑条下方",center.TrayHost.Tag.ToString()=="system-hidden-tray"&&center.TrayHost.TranslatePoint(new Point(),center).Y>center.GlassSlider.TranslatePoint(new Point(),center).Y&&!AppearanceProbe.Visuals<TextBlock>(center).Any(text=>text.Text=="已打开的应用"));check("电源图标处于玻璃滑条下方左侧",center.BatteryIcon.Source!=null&&center.BatteryFooter.TranslatePoint(new Point(),center).Y>center.GlassSlider.TranslatePoint(new Point(),center).Y);var batterySamples=new DrawingVisual();using(var dc=batterySamples.RenderOpen()){dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(35,48,58)),null,new Rect(0,0,420,66));double[] levels={.1,.3,.8,1};for(int n=0;n<levels.Length;n++){dc.DrawImage(BatteryVisual.Create(levels[n],n==3,true),new Rect(13+n*104,10,47,28));dc.DrawText(new FormattedText((levels[n]*100).ToString("0")+"%"+(n==3?" 充电":""),System.Globalization.CultureInfo.InvariantCulture,FlowDirection.LeftToRight,new Typeface("Microsoft YaHei UI"),12,Brushes.White,1),new Point(10+n*104,44));}}var batteryBitmap=new RenderTargetBitmap(420,66,96,96,PixelFormats.Pbgra32);batteryBitmap.Render(batterySamples);var batteryPixels=new byte[420*66*4];batteryBitmap.CopyPixels(batteryPixels,420*4,0);bool red=false,amber=false,green=false;for(int n=0;n<batteryPixels.Length;n+=4){red|=batteryPixels[n+2]>180&&batteryPixels[n+1]<130;amber|=batteryPixels[n+2]>180&&batteryPixels[n+1]>140&&batteryPixels[n]<110;green|=batteryPixels[n+1]>150&&batteryPixels[n+2]<150;}check("电池绘制按低中高电量区分颜色并提供充电示例",red&&amber&&green);var batteryEncoder=new PngBitmapEncoder();batteryEncoder.Frames.Add(BitmapFrame.Create(batteryBitmap));using(var stream=File.Create(System.IO.Path.Combine(Program.OutDir,"电池状态绘制样例.png")))batteryEncoder.Save(stream);center.Hide();var otherCenter=new ControlCenter(box,dock);check("控制中心重新创建恢复上次玻璃数值",otherCenter.GlassSlider.Value==37);otherCenter.Close();center.Close();check("底栏移除控制中心按钮且设置保留入口",!AppearanceProbe.Visuals<Button>(dock).Any(button=>Object.Equals(button.Tag,"control-center"))&&box.SettingsMenu().Items.OfType<MenuItem>().Any(item=>Object.Equals(item.Header,"控制中心"))&&dock.LauncherExcluded());var actualAudio=ControlAudio.Read();check("控制中心读取真实音频或明确设备不可用",actualAudio.Available?actualAudio.Volume>=0&&actualAudio.Volume<=100&&!String.IsNullOrWhiteSpace(actualAudio.Id):!String.IsNullOrWhiteSpace(actualAudio.Error));check("控制中心音频输出列表包含实际默认设备",!actualAudio.Available||ControlAudio.Outputs().Any(output=>output.Id==actualAudio.Id));var wifiSameA=new ControlWifi.Available{Name="same",SsidBytes=new byte[]{115,97,109,101},Auth=7,Cipher=4,Secured=true,Signal=80};var wifiSameB=new ControlWifi.Available{Name="same",SsidBytes=wifiSameA.SsidBytes,Auth=7,Cipher=4,Secured=true,Signal=30,Connected=true};var wifiOpen=new ControlWifi.Available{Name="same",SsidBytes=wifiSameA.SsidBytes,Auth=1,Cipher=0,Secured=false,Signal=90};check("同名但不同安全类型的无线网络不会被错误合并",ControlWifi.DistinctNetworks(new[]{wifiSameA,wifiOpen}).Count==2);check("同网络多个接口优先保留已连接的入口",Object.ReferenceEquals(ControlWifi.DistinctNetworks(new[]{wifiSameA,wifiSameB})[0],wifiSameB));var wifiOtherBytes=new ControlWifi.Available{Name="same",SsidBytes=new byte[]{115,97,109,102},Auth=7,Cipher=4,Secured=true,Signal=20};check("无线网络身份按原始SSID字节区分",ControlWifi.DistinctNetworks(new[]{wifiSameA,wifiOtherBytes}).Count==2);var sample=new ControlWifi.Available{Name="sample<&网络",Auth=7,Cipher=4,Secured=true};string xml=ControlWifi.ProfileXml(sample,"sample<&pass",false);check("无线临时配置转义名称及密码且不自动保存",xml.Contains("sample&lt;&amp;网络")&&xml.Contains("sample&lt;&amp;pass")&&xml.Contains("<connectionMode>manual</connectionMode>"));sample.Secured=false;xml=ControlWifi.ProfileXml(sample,"",true);check("开放网络不生成共享密码且记住模式自动连接",!xml.Contains("sharedKey")&&xml.Contains("<connectionMode>auto</connectionMode>"));sample.Secured=true;sample.Auth=6;bool wifiRejected=false;try{ControlWifi.ProfileXml(sample,"sample-pass",false);}catch(InvalidOperationException){wifiRejected=true;}check("未知企业认证拒绝伪造个人无线配置",wifiRejected);int? actualBrightness=ControlHardware.Brightness();check("控制中心亮度源真实有效或明确不支持",!actualBrightness.HasValue||actualBrightness.Value>=0&&actualBrightness.Value<=100);
   var newStore=new Store(System.IO.Path.Combine(s.Root,"新建文件隔离"));var newTypes=NewFiles.Types();var textType=newTypes.First(type=>type.Extension==".txt");string newText=NewFiles.Create(newStore,textType,"中文文档");File.WriteAllText(newText,"保留原文件内容",Encoding.UTF8);bool duplicateBlocked=false;try{NewFiles.Create(newStore,textType,"中文文档");}catch(IOException){duplicateBlocked=true;}check("新建中文文件并拒绝覆盖同名文件",duplicateBlocked&&File.ReadAllText(newText,Encoding.UTF8)=="保留原文件内容");
   bool unsafeNames=true;foreach(string invalid in new[]{"../越界","CON","a:b",".."}){bool rejected=false;try{NewFiles.Create(newStore,textType,invalid);}catch(InvalidDataException){rejected=true;}unsafeNames&=rejected;}check("新建文件拒绝路径越界与Windows保留名称",unsafeNames);
   var newFileResults=new List<object>();bool validNewTypes=true;foreach(var type in newTypes){string created=NewFiles.Create(newStore,type,"新建测试"+type.Label.Replace(" ",""),exe);bool valid=type.Kind=="Folder"?Directory.Exists(created):File.Exists(created);if(type.Kind=="Template")valid&=File.ReadAllBytes(created).SequenceEqual(File.ReadAllBytes(type.Template));if(type.Kind=="Docx"){using(var stream=File.OpenRead(created))using(var zip=new System.IO.Compression.ZipArchive(stream,System.IO.Compression.ZipArchiveMode.Read)){valid&=zip.GetEntry("[Content_Types].xml")!=null&&zip.GetEntry("_rels/.rels")!=null&&zip.GetEntry("word/document.xml")!=null;}}if(type.Kind=="Pdf")valid&=File.ReadAllText(created).StartsWith("%PDF-1.4")&&File.ReadAllText(created).Contains("startxref");if(type.Kind=="Bitmap")using(var bmp=Drawing.Image.FromFile(created))valid&=bmp.Width==64&&bmp.Height==64;if(type.Kind=="Shortcut")valid&=String.Equals(Native.ShortcutTarget(created),exe,StringComparison.OrdinalIgnoreCase);validNewTypes&=valid;newFileResults.Add(new{type.Label,type.Extension,type.Kind,type.Template,type.Source,path=created,passed=valid});}check("所有新建类型生成真实文件且模板与文档结构有效",validNewTypes);
@@ -1234,7 +2194,12 @@ public static class Tests {
   dock.Hold=new DockHold(dock,true);dock.ApplyHoldVisibility();check("F6未按住时底栏常驻桌面且非置顶",dock.IsVisible&&!dock.Topmost&&Native.DockAnchored(dock));var f6Cover=new Window{Title="F6桌面覆盖验收",WindowStyle=WindowStyle.None,Left=SystemParameters.WorkArea.Left,Top=SystemParameters.WorkArea.Top,Width=SystemParameters.WorkArea.Width,Height=SystemParameters.WorkArea.Height,ShowInTaskbar=false};f6Cover.Show();check("普通应用窗口能覆盖桌面底栏",Native.Above(f6Cover,dock));IntPtr f6Foreground=Native.GetForegroundWindow();dock.Hold.SetHeld(true,"isolated held state test");await System.Threading.Tasks.Task.Delay(180);check("F6按住显示且不抢当前前台窗口",dock.IsVisible&&dock.Topmost&&Native.GetForegroundWindow()==f6Foreground);Native.DesktopWidget(dock);Native.AnchorDock(dock);check("桌面层级维护不会压低F6临时栏",dock.IsVisible&&dock.Topmost);dock.Hold.SetHeld(true,"repeat held test");check("F6重复按下不重复切换可见状态",dock.Hold.Presses==1&&dock.IsVisible);dock.Hold.SetHeld(false,"isolated release state test");check("F6松开退回桌面层并撤销临时置顶",dock.IsVisible&&!dock.Topmost&&dock.Hold.Releases==1&&Native.DockAnchored(dock));check("F6松开后普通应用重新覆盖底栏",Native.Above(f6Cover,dock));f6Cover.Close();box.Reveal();box.MinimizePanel();check("F5或Esc收起面板保留桌面底栏",dock.IsVisible&&!dock.Topmost&&Native.DockAnchored(dock));dock.Hold.SetHeld(true,"dispose while held test");dock.Hold.Dispose();check("F6控制器退出时释放置顶并保留桌面底栏",!dock.Hold.Held&&dock.IsVisible&&!dock.Topmost);dock.Hold=null;dock.Show();dock.ApplyLayout();
   var toggleWindow=new Window{Title="底栏图标切换隔离窗口",Width=240,Height=130,ShowInTaskbar=false};toggleWindow.Show();var toggleHandle=new WindowInteropHelper(toggleWindow).Handle;CodexActivation.Focus(toggleHandle);await System.Threading.Tasks.Task.Delay(120);var toggleSources=new[]{new AppWindow{Handle=toggleHandle,Executable=Process.GetCurrentProcess().MainModule.FileName,ProcessId=Process.GetCurrentProcess().Id,Minimized=false}};string toggleAction;var toggleTimer=Stopwatch.StartNew();bool toggleMinimize=RunningApps.ToggleBest(toggleSources,out toggleAction);double minimizeDispatchMs=toggleTimer.Elapsed.TotalMilliseconds;await System.Threading.Tasks.Task.Delay(180);check("再次点击前台应用图标请求最小化且窗口实际最小化",toggleMinimize&&toggleAction=="minimize-existing-request"&&toggleWindow.WindowState==WindowState.Minimized);toggleTimer.Restart();bool toggleRestore=RunningApps.ToggleBest(toggleSources,out toggleAction);double restoreDispatchMs=toggleTimer.Elapsed.TotalMilliseconds;await System.Threading.Tasks.Task.Delay(160);check("点击最小化应用恢复同一窗口且不重复创建",toggleRestore&&toggleAction=="focus-existing-no-launch"&&toggleWindow.WindowState!=WindowState.Minimized&&new WindowInteropHelper(toggleWindow).Handle==toggleHandle);var toggleOther=new Window{Title="另一个前台窗口",Width=200,Height=100,ShowInTaskbar=false};toggleOther.Show();CodexActivation.Focus(new WindowInteropHelper(toggleOther).Handle);await System.Threading.Tasks.Task.Delay(100);toggleTimer.Restart();bool toggleBackground=RunningApps.ToggleBest(toggleSources,out toggleAction);double backgroundDispatchMs=toggleTimer.Elapsed.TotalMilliseconds;await System.Threading.Tasks.Task.Delay(150);check("点击后台应用会切回而非直接最小化",toggleBackground&&toggleAction=="focus-existing-no-launch"&&toggleWindow.WindowState!=WindowState.Minimized&&Native.GetForegroundWindow()==toggleHandle);check("失效窗口句柄不会触发错误的应用操作",!RunningApps.ToggleBest(new[]{new AppWindow{Handle=IntPtr.Zero,Executable=toggleSources[0].Executable}},out toggleAction));check("窗口PID改变时拒绝操作过期记录",!RunningApps.ToggleBest(new[]{new AppWindow{Handle=toggleHandle,Executable=toggleSources[0].Executable,ProcessId=Process.GetCurrentProcess().Id+1000000}},out toggleAction));File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"底栏请求耗时.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),minimizeDispatchMs,restoreDispatchMs,backgroundDispatchMs,source="Stopwatch around shared ToggleBest; real isolated WPF windows. Measures dispatch only, not Windows animation or cold app startup."}),Encoding.UTF8);bool rapidAlternation=true;CodexActivation.Focus(toggleHandle);await System.Threading.Tasks.Task.Delay(50);var rapidActions=new List<object>();for(int turn=0;turn<6;turn++){bool wantMinimized=turn%2==0;var rapidTimer=Stopwatch.StartNew();string rapidAction;bool rapidAccepted=RunningApps.ToggleBest(toggleSources,out rapidAction);while(rapidTimer.ElapsedMilliseconds<1000&&((toggleWindow.WindowState==WindowState.Minimized)!=wantMinimized||(!wantMinimized&&Native.GetForegroundWindow()!=toggleHandle)))await System.Threading.Tasks.Task.Delay(5);bool reached=(toggleWindow.WindowState==WindowState.Minimized)==wantMinimized&&(wantMinimized||Native.GetForegroundWindow()==toggleHandle);rapidAlternation&=rapidAccepted&&reached&&rapidAction==(wantMinimized?"minimize-existing-request":"focus-existing-no-launch");rapidActions.Add(new{turn,wantMinimized,rapidAccepted,reached,elapsedMs=rapidTimer.Elapsed.TotalMilliseconds});}check("连续六次窗口切换无需双击等待且保持交替状态",rapidAlternation);File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"连续窗口切换.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),passed=rapidAlternation,rounds=rapidActions,scope="Own isolated WPF window; shared action called successively with state observation, not physical mouse latency or third-party cold startup."}),Encoding.UTF8);toggleOther.Close();toggleWindow.Close();
   var rapidButton=new DockClickButton{AcceptRapidClicks=true};check("底栏应用图标不忽略快速连续第二次与第三次点击",rapidButton.AcceptsPressCount(1)&&rapidButton.AcceptsPressCount(2)&&rapidButton.AcceptsPressCount(3));check("面板与预览仍保留原双击防重复规则",new DockClickButton().AcceptsPressCount(1)&&!new DockClickButton().AcceptsPressCount(2));check("实际底栏应用按钮均启用连续点击",AppearanceProbe.Visuals<DockClickButton>(dock).Where(button=>button.Tag is string&&((string)button.Tag)!="windows-start-menu").All(button=>button.AcceptRapidClicks));
-  var cornerClock=Program.Status;cornerClock.Reveal();cornerClock.UpdateLayout();Native.SendMessage(new WindowInteropHelper(cornerClock).Handle,0x231,IntPtr.Zero,IntPtr.Zero);cornerClock.Width+=14;cornerClock.Height+=9;cornerClock.UpdateLayout();Native.SendMessage(new WindowInteropHelper(cornerClock).Handle,0x232,IntPtr.Zero,IntPtr.Zero);cornerClock.Dispatcher.Invoke(DispatcherPriority.ApplicationIdle,new Action(()=>{}));check("时钟缩放结束后四角圆弧不被更大的裁剪切掉",Native.WidgetCornerRadius(cornerClock)==12&&Native.ClipContains(cornerClock,4.5,4.5)&&Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,4.5)&&Native.ClipContains(cornerClock,4.5,cornerClock.ActualHeight-4.5)&&Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,cornerClock.ActualHeight-4.5));Native.ClipGlass(cornerClock,18);check("旧调用传入18时仍保护时钟的12圆角",Native.ClipContains(cornerClock,4.5,4.5)&&!Native.ClipContains(cornerClock,0,0));File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"时钟四角裁剪核对.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),radius=Native.WidgetCornerRadius(cornerClock),topLeft=Native.ClipContains(cornerClock,4.5,4.5),topRight=Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,4.5),bottomLeft=Native.ClipContains(cornerClock,4.5,cornerClock.ActualHeight-4.5),bottomRight=Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,cornerClock.ActualHeight-4.5),scope="Actual HWND region queried after WM_EXITSIZEMOVE and a legacy radius-18 request; not a physical mouse resize screenshot."}),Encoding.UTF8);DesktopStorageTests.Run(s,check);PanelInteractionTests.Run(box,check);AttentionLayerTests.Run(box.Dock,check);PreviewLayerTests.Run(box.Dock,check);FileShelfTests.Run(box,check);FileNameLayoutTests.Run(check);await ControlMaterialTests.Run(box,check);TaskbarVisibilityTests.Run(check);ScreenshotDropTests.Run(check);await ScreenshotPageTests.Run(check);ComponentTests.Run(box,check);await SharedDesktopTests.Run(box,check);
+  check("分离式启动器只关联同一安装目录中的实际窗口",
+   RunningApps.MatchesLauncherWindow(@"D:\Apps\DingDing\DingtalkLauncher.exe",@"D:\Apps\DingDing\main\current\DingTalk.exe")&&
+   RunningApps.MatchesLauncherWindow(@"D:\Apps\DockerDesktop\Docker Desktop.exe",@"D:\Apps\DockerDesktop\frontend\Docker Desktop.exe")&&
+   !RunningApps.MatchesLauncherWindow(@"D:\Apps\DingDing\DingtalkLauncher.exe",@"D:\Apps\DingDing-Fake\DingTalk.exe"));
+   await WindowPreview.VerifyInteractions(dock,check);
+  var cornerClock=Program.Status;cornerClock.Reveal();cornerClock.UpdateLayout();Native.SendMessage(new WindowInteropHelper(cornerClock).Handle,0x231,IntPtr.Zero,IntPtr.Zero);cornerClock.Width+=14;cornerClock.Height+=9;cornerClock.UpdateLayout();Native.SendMessage(new WindowInteropHelper(cornerClock).Handle,0x232,IntPtr.Zero,IntPtr.Zero);cornerClock.Dispatcher.Invoke(DispatcherPriority.ApplicationIdle,new Action(()=>{}));check("时钟缩放结束后四角圆弧不被更大的裁剪切掉",Native.WidgetCornerRadius(cornerClock)==12&&Native.ClipContains(cornerClock,4.5,4.5)&&Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,4.5)&&Native.ClipContains(cornerClock,4.5,cornerClock.ActualHeight-4.5)&&Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,cornerClock.ActualHeight-4.5));Native.ClipGlass(cornerClock,18);check("旧调用传入18时仍保护时钟的12圆角",Native.ClipContains(cornerClock,4.5,4.5)&&!Native.ClipContains(cornerClock,0,0));File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"时钟四角裁剪核对.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),radius=Native.WidgetCornerRadius(cornerClock),topLeft=Native.ClipContains(cornerClock,4.5,4.5),topRight=Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,4.5),bottomLeft=Native.ClipContains(cornerClock,4.5,cornerClock.ActualHeight-4.5),bottomRight=Native.ClipContains(cornerClock,cornerClock.ActualWidth-4.5,cornerClock.ActualHeight-4.5),scope="Actual HWND region queried after WM_EXITSIZEMOVE and a legacy radius-18 request; not a physical mouse resize screenshot."}),Encoding.UTF8);DesktopStorageTests.Run(s,check);PanelInteractionTests.Run(box,check);AttentionLayerTests.Run(box.Dock,check);PreviewLayerTests.Run(box.Dock,check);FileShelfTests.Run(box,check);FileNameLayoutTests.Run(check);await ControlMaterialTests.Run(box,check);TaskbarVisibilityTests.Run(check);ScreenshotDropTests.Run(check);await ScreenshotPageTests.Run(check);ComponentTests.Run(box,check);await SharedDesktopTests.Run(box,check);FolderDropTests.Run(check);
   File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"测试结果.json"),new JavaScriptSerializer().Serialize(new{time=DateTimeOffset.Now.ToString("o"),passed=ok,results=results,screen=new{width=screen.Bounds.Width,height=screen.Bounds.Height,dpi=scale*96},glass=new{panelHostBackdropAccepted=box.GlassAccepted,panelMaterial=Native.PanelMaterialInfo(box),dockNativeAccentDisabled=dock.GlassAccepted,pixelAlpha=pixel[3],note="主面板透明WPF叠加实时HostBackdrop渐变；底栏保持原玻璃；无截图缓存。PNG不含系统合成磨砂。"},scope="隔离目录：真实文件、分组、恢复、WPF渲染、Esc路由事件、屏幕布局与真实CPU/GPU读取；未自动操作系统文件关联或真实鼠标拖放。"}),Encoding.UTF8);
  }catch(Exception ex){ok=false;Directory.CreateDirectory(Program.OutDir);File.WriteAllText(System.IO.Path.Combine(Program.OutDir,"测试异常.txt"),ex.ToString(),Encoding.UTF8);}finally{Environment.ExitCode=ok?0:1;box.Quit();}}
 }
